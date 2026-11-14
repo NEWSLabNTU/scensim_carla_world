@@ -49,6 +49,8 @@ pub struct CarlaWorld {
     map_origin: [f64; 3],
     /// The vehicle spec's physics, for every backend this server connects (roadmap 051 K3).
     vehicle_physics: Option<carla_physics_spec::CarlaPhysics>,
+    /// The stack's state directory, for the signal table (`state_dir`, roadmap 076 A9).
+    state_dir: Option<PathBuf>,
     /// CARLA's spectator, moved over the ego after each step when asked (roadmap 068 step 2).
     spectator: Spectator,
 }
@@ -87,6 +89,7 @@ impl CarlaWorld {
             handles: BTreeMap::new(),
             map_origin: [0.0; 3],
             vehicle_physics: None,
+            state_dir: None,
             spectator: Spectator::new(spectator::Config::default()),
         }
     }
@@ -110,6 +113,12 @@ impl CarlaWorld {
         physics: Option<carla_physics_spec::CarlaPhysics>,
     ) -> Self {
         self.vehicle_physics = physics;
+        self
+    }
+
+    /// Where the signal table goes when this server writes it (`state_dir`).
+    pub fn with_state_dir(mut self, state_dir: Option<PathBuf>) -> Self {
+        self.state_dir = state_dir;
         self
     }
 
@@ -156,6 +165,7 @@ impl CarlaWorld {
             self.config.clone(),
         );
         backend.set_vehicle_physics(self.vehicle_physics.clone());
+        backend.set_state_dir(self.state_dir.clone());
         backend.before_serving();
         self.backend = Some(backend);
         self.not_ready.clear();

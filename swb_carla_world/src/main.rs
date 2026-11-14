@@ -3,7 +3,7 @@
 //!
 //!     swb_carla_world [--generate-signal-table <map dir>] --ros-args -p port:=5591 \
 //!         -p carla_host:=localhost -p carla_port:=2000 -p ssv2_port:=5555 \
-//!         [-p config_file:=<swb_carla_world.yaml>]
+//!         [-p config_file:=<swb_carla_world.yaml>] [-p state_dir:=<project>/state]
 //!
 //! One process per CARLA server, and the only one that ticks it: it holds an exclusive lock
 //! on `/tmp/swb-locks/carla-<host>-<port>.lock` for its whole life, and a second one is
@@ -14,8 +14,10 @@
 //! no further word to CARLA (roadmap 034; CLAUDE.md "A CARLA client must not outlive its
 //! server"). It ends with its parent, too (`PR_SET_PDEATHSIG`).
 //!
-//! `--generate-signal-table <map dir>`: write the map's CARLA traffic light table, then leave
-//! CARLA as found.
+//! The map's traffic light table (what acb_bridge publishes signals from) is written at an
+//! Initialize that finds it missing or stale: into `<state_dir>/<map>/` with `state_dir`
+//! (roadmap 076 A9), else beside the map. `--generate-signal-table <map dir>` writes it at
+//! once, to the same place, then leaves CARLA as found.
 
 mod actor_census;
 mod backend;
@@ -107,10 +109,21 @@ fn main() -> Result<()> {
         Err(e) => refuse(&e),
     };
 
+    // The stack's state directory: where the signal table goes (roadmap 076 A9); empty:
+    // beside the map.
+    let state_dir = params.path("state_dir");
+    if let Some(dir) = &state_dir {
+        tracing::info!(
+            "State directory {}: signal tables go to <map>/ there",
+            dir.display()
+        );
+    }
+
     if let Some(map_dir) = generate_signal_table_arg() {
         let Some(mut carla) = backend::carla::connect(config, config_dir, &shutdown)? else {
             return Ok(());
         };
+        carla.set_state_dir(state_dir);
         let result = carla.generate_signal_table(&map_dir);
         carla.shutdown();
         return result;
@@ -147,8 +160,9 @@ fn main() -> Result<()> {
         }
         None => None,
     };
-    let mut world =
-        world::CarlaWorld::new(config, config_dir).with_vehicle_physics(vehicle_physics);
+    let mut world = world::CarlaWorld::new(config, config_dir)
+        .with_vehicle_physics(vehicle_physics)
+        .with_state_dir(state_dir);
     world.set_spectator(spectator);
     world.try_connect();
     let mut shell = Shell::new(world);

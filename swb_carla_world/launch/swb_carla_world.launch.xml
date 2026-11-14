@@ -6,7 +6,7 @@
 
     play_launch launch swb_carla_world swb_carla_world.launch.xml [port:=5591] [carla_host:=localhost]
         [carla_port:=2000] [ssv2_port:=5555] [config_file:=...] [npc_contact_sensors:=false]
-        [vehicle_physics:=<carla_physics.yaml>|none]
+        [vehicle_physics:=<carla_physics.yaml>|none] [state_dir:=<project>/state]
 
   One per CARLA server: a second against the same CARLA, or on the same port, exits 1 at once
   (it holds /tmp/swb-locks/carla-<host>-<port>.lock and binds its port first). A hung CARLA
@@ -28,6 +28,9 @@
   <arg name="vehicle_physics" default="none"
        description="sim_vehicle_spec's carla_physics.yaml (share/sim_vehicle_spec/generated/tesla_model3/ for the Tesla): the physics the ego and agent vehicles of its blueprint run (roadmap 051); none (the default) = the blueprints' own"/>
 
+  <arg name="state_dir" default=""
+       description="the stack's state directory: a missing or stale signal table is written to &lt;state_dir&gt;/&lt;map&gt;/ (traffic_lights.yaml, carla/traffic_lights.yaml) at the first Initialize on a map, for acb's traffic_light_state_path; empty (the default) = beside the map (roadmap 076 A9)"/>
+
   <node pkg="swb_carla_world" exec="swb_carla_world" name="swb_carla_world"
         output="screen" respawn="true" respawn_delay="2.0">
     <param name="port" value="$(var port)"/>
@@ -37,5 +40,6 @@
     <param name="ssv2_port" value="$(var ssv2_port)"/>
     <param name="npc_contact_sensors" value="$(var npc_contact_sensors)"/>
     <param name="vehicle_physics" value="$(var vehicle_physics)"/>
+    <param name="state_dir" value="$(var state_dir)"/>
   </node>
 </launch>

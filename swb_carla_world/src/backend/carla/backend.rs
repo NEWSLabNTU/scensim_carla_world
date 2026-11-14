@@ -1111,6 +1111,10 @@ pub struct CarlaBackend {
     world_id: Option<u64>,
     /// Generator mode: write `<map dir>/traffic_lights.yaml` instead of checking it.
     generate_signal_table: bool,
+    /// The stack's state directory (`state_dir`, roadmap 076 A9): a signal table this server
+    /// writes goes to `<state_dir>/<map>/`, never into the map directory. `None`: beside the
+    /// map, as the generator writes.
+    state_dir: Option<PathBuf>,
     /// Map-frame position of CARLA's world origin for the scenario's map, read at every
     /// Initialize from `<map dir>/carla/map_origin.yaml` (zero without one).
     map_origin: MapOrigin,
@@ -1340,6 +1344,7 @@ impl CarlaBackend {
             collision_monitor,
             world_id,
             generate_signal_table: false,
+            state_dir: None,
             map_origin: MapOrigin::default(),
             carla_unreachable: false,
             tick_time: Duration::ZERO,
@@ -1731,6 +1736,11 @@ impl CarlaBackend {
     /// The world protocol's episode_id: CARLA's world id, 0 when it could not be read.
     pub fn episode_id(&self) -> u64 {
         self.world_id.unwrap_or(0)
+    }
+
+    /// Where a signal table this server writes goes (`state_dir`); `None`: the map dir.
+    pub fn set_state_dir(&mut self, state_dir: Option<PathBuf>) {
+        self.state_dir = state_dir;
     }
 
     /// The physics a vehicle stack's car runs: `carla_physics.yaml` (`vehicle_physics`), set
@@ -2621,13 +2631,17 @@ impl CarlaBackend {
         self.check_resolved_signals(town, lanelet2_map_path, &lanelet_lights, &carla_signals)
     }
 
-    /// Compare the resolved table with `<map dir>/traffic_lights.yaml`, the map
-    /// artifact acb publishes signals from (roadmap 017: the map dir is read-only at run
-    /// time). In generator mode (`generate_signal_table`) write it instead.
+    /// Compare the resolved table with the one acb publishes signals from, and write it when
+    /// it is missing or stale (roadmap 076 A9: no manual step). The table is looked for in
+    /// the state directory (`state_dir`, `<state_dir>/<map>/`) and then the map directory, and
+    /// written to the first (or, without a state directory, the second). In generator mode
+    /// (`generate_signal_table`) it is written unconditionally.
     ///
-    /// A missing table is a warning -- swb still applies the scenario's signals to CARLA,
-    /// only acb has nothing to publish them from -- but a different one fails Initialize:
-    /// acb would report the state of the wrong lights to Autoware.
+    /// A table that differs from the resolved one for the same Lanelet2 map is rewritten in
+    /// the state directory, but fails Initialize in a map directory (the user's): acb would
+    /// report the state of the wrong lights to Autoware. A table that cannot be written is a
+    /// warning when there was none (swb still applies the scenario's signals to CARLA, only
+    /// acb has nothing to publish them from) and an error when the old one is wrong.
     fn check_resolved_signals(
         &self,
         town: &str,
@@ -2652,10 +2666,19 @@ impl CarlaBackend {
             table.unmapped.carla_opendrive_ids.len()
         );
         let map_dir = rs::map_dir_of(std::path::Path::new(lanelet2_map_path));
-        let path = rs::table_path(&map_dir);
+        let state_dir = self.state_dir.as_deref();
+        let dest = rs::table_dir(&map_dir, state_dir);
+        let regenerate = format!(
+            "ros2 run swb_carla_world swb_carla_world --generate-signal-table {}{}",
+            map_dir.display(),
+            state_dir.map_or(String::new(), |d| format!(
+                " --ros-args -p state_dir:={}",
+                d.display()
+            ))
+        );
 
         if self.generate_signal_table {
-            let written = rs::write_table(&map_dir, &table.to_yaml()?)?;
+            let written = rs::write_table(&dest, &table.to_yaml()?)?;
             tracing::info!(
                 "Traffic light table ({summary}) written to {}",
                 written.display()
@@ -2663,32 +2686,48 @@ impl CarlaBackend {
             return Ok(());
         }
 
-        match rs::check_table(&path, &table)? {
-            rs::Check::Matches => {
+        let path = rs::find_table(&map_dir, state_dir);
+        let check = rs::check_table(&path, &table)?;
+        match rs::decide(&check, state_dir.is_some()) {
+            rs::Decision::Keep => {
                 tracing::info!(
                     "Traffic light table {} matches CARLA ({summary})",
                     path.display()
                 );
                 Ok(())
             }
-            rs::Check::Missing => {
-                tracing::warn!(
-                    "No traffic light table at {} ({summary} resolved): acb_bridge will \
-                     publish no signals. Generate it once per map: \
-                     ros2 run scenario_world_bridge scenario_world_bridge \
-                     --generate-signal-table {}",
-                    path.display(),
-                    map_dir.display()
-                );
-                Ok(())
+            rs::Decision::Write(why) => {
+                match table.to_yaml().and_then(|y| rs::write_table(&dest, &y)) {
+                    Ok(written) => {
+                        tracing::info!(
+                            "Traffic light table {} was {why}; wrote {} ({summary})",
+                            path.display(),
+                            written.display()
+                        );
+                        Ok(())
+                    }
+                    Err(e) if check == rs::Check::Missing => {
+                        tracing::warn!(
+                            "No traffic light table at {} ({summary} resolved), and it cannot \
+                             be written ({e:#}): acb_bridge will publish no signals. Give the \
+                             stack a writable state_dir, or generate it: {regenerate}",
+                            path.display()
+                        );
+                        Ok(())
+                    }
+                    Err(e) => eyre::bail!(
+                        "The traffic light table {} is {why} (resolved: {summary}), and it \
+                         cannot be rewritten ({e:#}). acb_bridge would publish the wrong \
+                         lights. Regenerate it: {regenerate}",
+                        path.display()
+                    ),
+                }
             }
-            rs::Check::Differs(why) => eyre::bail!(
+            rs::Decision::Fail(why) => eyre::bail!(
                 "The traffic light table {} does not match CARLA's lights ({why}; resolved: \
                  {summary}). acb_bridge would publish the wrong lights. Regenerate it: \
-                 ros2 run scenario_world_bridge scenario_world_bridge \
-                 --generate-signal-table {}",
-                path.display(),
-                map_dir.display()
+                 {regenerate}",
+                path.display()
             ),
         }
     }
@@ -3116,7 +3155,8 @@ impl CarlaBackend {
     }
 
     /// `--generate-signal-table <map dir>`: load the map's town in CARLA, resolve its signals
-    /// and write `<map dir>/traffic_lights.yaml`. The one place swb writes a map dir.
+    /// and write `<map dir>/traffic_lights.yaml` (with `state_dir`, into
+    /// `<state_dir>/<map>/` instead).
     pub fn generate_signal_table(&mut self, map_dir: &std::path::Path) -> Result<()> {
         self.generate_signal_table = true;
         let result = self.load_scenario_map(&map_dir.to_string_lossy());
