@@ -37,6 +37,16 @@ file, the server applies it before the spawn's settling tick, reads it back afte
 and refuses an actor that differs. The spawn reply names the spec's `spec_hash`, which the
 bridge compares with the vehicle side's.
 
+The server then keeps it on. CARLA 0.9.16 puts a blueprint's own tire friction (3.5 for the
+Model 3) back on live cars of that blueprint whenever another one spawns, by any client (the
+rest of the physics stays; a sensor, a walker or another blueprint resets nothing). So after
+each spawn of its own, before the settling tick, and after each tick whose world snapshot
+shows a new actor id (someone else's spawn), the server reads every spec'd car back and
+re-applies the file -- times the road's friction factor -- to any that lost it, and logs
+`'<name>' lost its vehicle spec's physics when ... spawned`. Its own spawns cost the cars
+nothing; another client's costs one tick. `scripts/check_spec_tires.py` checks it on a live
+CARLA (the ego, two agent Model 3s, a scenario NPC, another client's Model 3 and Audi).
+
 ## Time and episodes
 
 Simulation time is `nanos(elapsed_seconds) + BASE_NS` (`swb_core::sim_time`); the episode is

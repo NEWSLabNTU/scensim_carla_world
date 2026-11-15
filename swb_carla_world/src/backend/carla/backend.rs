@@ -1166,6 +1166,12 @@ pub struct CarlaBackend {
     /// sim_vehicle_spec's carla_physics.yaml (roadmap 051 K3): put on every vehicle a vehicle
     /// stack drives whose body is its blueprint. `None`: the blueprint's own physics.
     vehicle_physics: Option<carla_physics_spec::CarlaPhysics>,
+    /// The cars that run `vehicle_physics`, by actor id (their entity names): kept on it,
+    /// since CARLA 0.9.16 puts the blueprint's tire friction back on them when another car
+    /// of the blueprint spawns ([`CarlaBackend::keep_spec_physics`]).
+    spec_cars: HashMap<u32, String>,
+    /// When an actor appeared, from anyone (`vehicle_physics::SpawnWatch`).
+    spawn_watch: super::vehicle_physics::SpawnWatch,
     /// The weather before the scenario changed it (the road's look, its sky), put back at
     /// `Initialize`; a `set_weather` in between replaces it.
     weather_before_scenario: Option<Weather>,
@@ -1362,6 +1368,8 @@ impl CarlaBackend {
             road: DRY_ROAD,
             own_friction: HashMap::new(),
             vehicle_physics: None,
+            spec_cars: HashMap::new(),
+            spawn_watch: Default::default(),
             weather_before_scenario: None,
             sky: Sky::default(),
             scenario_clock: None,
@@ -1774,6 +1782,95 @@ impl CarlaBackend {
         };
         super::vehicle_physics::apply(&vehicle, &physics)?;
         Ok(Some(physics))
+    }
+
+    /// Every spec'd car on the vehicle spec's physics again, on this road, after `cause`
+    /// spawned something: CARLA 0.9.16 puts a blueprint's tire friction (3.5) back on live
+    /// vehicles of the blueprint when another one of it spawns, by any client (b1c0684;
+    /// measured 2026-11-15: the one whose physics was applied last). Each car is read back first -- one RPC -- and re-applied
+    /// only if it lost the file; a re-applied control takes at once, before the next tick.
+    /// The other vehicles on a scaled road get the road's factor on their own tires again.
+    /// Failures are logged, not returned: the frame goes on.
+    fn keep_spec_physics(&mut self, cause: &str) {
+        if let Some(physics) = self.vehicle_physics.clone() {
+            let factor = self.road.friction_factor;
+            let mut gone = Vec::new();
+            for (&id, name) in &self.spec_cars {
+                let vehicle = match self.world.actor(id) {
+                    Ok(Some(a)) => match a.into_kinds() {
+                        carla::client::ActorKind::Vehicle(v) => v,
+                        _ => continue,
+                    },
+                    Ok(None) => {
+                        gone.push(id);
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::debug!("'{name}' (actor {id}) not found for its physics: {e}");
+                        continue;
+                    }
+                };
+                let off = match super::vehicle_physics::off_road(&vehicle, &physics, factor) {
+                    Ok(off) => off,
+                    // LibCarla's cache still lists a car destroyed since; it reads nothing.
+                    Err(e) => {
+                        tracing::debug!("'{name}' (actor {id}): {e:#}");
+                        gone.push(id);
+                        continue;
+                    }
+                };
+                if off.is_empty() {
+                    continue;
+                }
+                match super::vehicle_physics::reapply(&vehicle, &physics, factor) {
+                    Ok(()) => tracing::info!(
+                        "'{name}' lost its vehicle spec's physics when {cause} spawned ({}): \
+                         re-applied",
+                        off.join("; ")
+                    ),
+                    Err(e) => tracing::warn!(
+                        "'{name}' lost its vehicle spec's physics when {cause} spawned ({}) \
+                         and could not have it back: {e:#}",
+                        off.join("; ")
+                    ),
+                }
+            }
+            for id in gone {
+                self.spec_cars.remove(&id);
+            }
+        }
+        if self.road.friction_factor != 1.0 {
+            let names: Vec<String> = self
+                .entities
+                .names()
+                .filter(|n| !self.spec_cars.values().any(|s| s == n))
+                .collect();
+            for name in names {
+                if let Err(e) = self.apply_road_friction(&name) {
+                    tracing::warn!("'{name}': the road's friction again after {cause}: {e:#}");
+                }
+            }
+        }
+    }
+
+    /// After a tick: if an actor appeared during it (anyone's: a vehicle bridge's sensor,
+    /// a Traffic Manager car, another client's vehicle), the spec'd cars kept on their
+    /// physics. The world snapshot is the client's own copy: no RPC unless something spawned.
+    fn keep_spec_physics_after_tick(&mut self) {
+        if self.spec_cars.is_empty() && self.road.friction_factor == 1.0 {
+            return;
+        }
+        let Ok(snapshot) = self.world.snapshot() else {
+            return;
+        };
+        let highest = snapshot
+            .actor_snapshots()
+            .map(|a| a.id())
+            .max()
+            .unwrap_or(0);
+        if self.spawn_watch.saw(highest) {
+            self.keep_spec_physics(&format!("an actor up to id {highest}"));
+        }
     }
 
     /// A vehicle's tire friction: its own times the road's factor. Not a vehicle: nothing.
@@ -3188,6 +3285,7 @@ impl CarlaBackend {
         let forgotten = self.spawned_actors.len();
         self.spawned_actors.clear();
         self.entities.clear();
+        self.spec_cars.clear();
         self.autopilot.clear();
         // A new server holds none of their vehicles; their agents are told to stop.
         if let Some(link) = self.agent_link.as_ref() {
@@ -3330,6 +3428,7 @@ impl CarlaBackend {
             );
         }
         self.entities.clear();
+        self.spec_cars.clear();
         self.commanded_lights.clear();
         self.reset_environment();
         // The previous run's simulator-driven vehicles are gone, so is the Traffic Manager:
@@ -3763,6 +3862,7 @@ impl CarlaBackend {
         };
 
         self.note_carla_ok();
+        self.keep_spec_physics_after_tick();
         Ok(simulation_time_ns)
     }
 
@@ -4253,6 +4353,13 @@ impl CarlaBackend {
             None
         };
 
+        // The cars spawned before this one are back on the blueprint's tires if it is
+        // their blueprint (CARLA 0.9.16): theirs again before the tick runs on them.
+        if !self.spec_cars.is_empty() || self.road.friction_factor != 1.0 {
+            self.keep_spec_physics(&format!("'{name}' (actor {actor_id})"));
+        }
+        self.spawn_watch.spawned(actor_id);
+
         // Wait one tick for the actor to be fully initialized. Only meaningful once we
         // own the tick -- before sync mode is on, CARLA is advancing by itself.
         //
@@ -4270,6 +4377,10 @@ impl CarlaBackend {
             }
         }
 
+        // Kept on it from now on, whoever spawns next.
+        if spec_physics.is_some() {
+            self.spec_cars.insert(actor_id, name.to_string());
+        }
         // The settling tick applied the physics: read it back.
         let spec_hash = match &spec_physics {
             Some(p) if self.sync_mode_enabled => {
