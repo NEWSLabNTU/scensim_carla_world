@@ -1761,7 +1761,7 @@ impl CarlaBackend {
     /// Put the vehicle spec's physics on `actor` when it is the file's blueprint: the
     /// physics, to read back after the next tick. Another body keeps its own (and says so).
     fn put_vehicle_physics(
-        &self,
+        &mut self,
         name: &str,
         actor: &carla::client::Actor,
         blueprint: &str,
@@ -1780,15 +1780,19 @@ impl CarlaBackend {
         let carla::client::ActorKind::Vehicle(vehicle) = actor.clone().into_kinds() else {
             return Ok(None);
         };
-        super::vehicle_physics::apply(&vehicle, &physics)?;
+        super::vehicle_physics::apply(&mut self.world, &vehicle, &physics)?;
         Ok(Some(physics))
     }
 
     /// Every spec'd car on the vehicle spec's physics again, on this road, after `cause`
     /// spawned something: CARLA 0.9.16 puts a blueprint's tire friction (3.5) back on live
     /// vehicles of the blueprint when another one of it spawns, by any client (b1c0684;
-    /// measured 2026-11-15: the one whose physics was applied last). Each car is read back first -- one RPC -- and re-applied
-    /// only if it lost the file; a re-applied control takes at once, before the next tick.
+    /// measured 2026-11-15: the one whose physics was applied last). Since every apply leaves
+    /// the blueprint's tire config to a decoy (`vehicle_physics::apply_kept`), no spawn
+    /// should reach a spec'd car any more: this is the backstop for one that does (another
+    /// client's apply on it). Each car is read back first -- one RPC -- and re-applied only if
+    /// it lost the file; a re-applied control takes at once, before the next tick, and the
+    /// car's velocity is set back after it (the apply rebuilds its PhysX vehicle at rest).
     /// The other vehicles on a scaled road get the road's factor on their own tires again.
     /// Failures are logged, not returned: the frame goes on.
     fn keep_spec_physics(&mut self, cause: &str) {
@@ -1822,10 +1826,10 @@ impl CarlaBackend {
                 if off.is_empty() {
                     continue;
                 }
-                match super::vehicle_physics::reapply(&vehicle, &physics, factor) {
-                    Ok(()) => tracing::info!(
+                match super::vehicle_physics::reapply(&mut self.world, &vehicle, &physics, factor) {
+                    Ok(_) => tracing::warn!(
                         "'{name}' lost its vehicle spec's physics when {cause} spawned ({}): \
-                         re-applied",
+                         re-applied, its velocity kept (its wheels and engine restart at 0 rpm)",
                         off.join("; ")
                     ),
                     Err(e) => tracing::warn!(
@@ -1893,11 +1897,17 @@ impl CarlaBackend {
             .own_friction
             .entry(id)
             .or_insert_with(|| control.wheels.iter().map(|w| w.tire_friction).collect());
-        for (wheel, own) in control.wheels.iter_mut().zip(own.iter()) {
-            wheel.tire_friction = own * self.road.friction_factor as f32;
+        // An apply rebuilds the car's PhysX vehicle: only when its tires are not the road's.
+        let current: Vec<f32> = control.wheels.iter().map(|w| w.tire_friction).collect();
+        let Some(want) =
+            super::vehicle_physics::road_tires(&current, own, self.road.friction_factor)
+        else {
+            return Ok(());
+        };
+        for (wheel, want) in control.wheels.iter_mut().zip(want) {
+            wheel.tire_friction = want;
         }
-        vehicle
-            .apply_physics_control(&control)
+        super::vehicle_physics::apply_kept(&mut self.world, &vehicle, &control)
             .wrap_err("apply its physics")?;
         Ok(())
     }
