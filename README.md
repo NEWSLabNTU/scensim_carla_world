@@ -96,7 +96,7 @@ them. `frozen`, the default, turns physics off on every `static.prop.mesh` the s
 spawn, after each world load (every `LoadWorld`, so a world CARLA reloaded or restarted with
 is covered too), and logs the count:
 
-    Map props: froze 44 of 44 static.prop.mesh actor(s) in Town01 (map_props: frozen)
+    Map props: froze 115 of 115 static.prop.mesh actor(s) in Town01 (map_props: frozen)
 
 They keep their colliders and stay where the level put them. `live` leaves them to CARLA, as
 before 2026-11-16. It is a world-server setting, not a host one, because it changes results;
