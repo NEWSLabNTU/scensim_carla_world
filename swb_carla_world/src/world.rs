@@ -24,6 +24,7 @@ use crate::backend::{
 use crate::config::{BridgeConfig, NpcMotion};
 use crate::coordinate_conversion::euler_to_quaternion;
 use crate::environment::{Precipitation, PrecipitationType, ScenarioWeather, Sun, TimeOfDay, Wind};
+use crate::map_props;
 use crate::proto::geometry_msgs::{self, Pose};
 use crate::proto::swb_world as wire;
 use crate::proto::traffic_simulator_msgs::entity_subtype::Enum as EntitySubtype;
@@ -53,6 +54,8 @@ pub struct CarlaWorld {
     state_dir: Option<PathBuf>,
     /// CARLA's spectator, moved over the ego after each step when asked (roadmap 068 step 2).
     spectator: Spectator,
+    /// The level's movable props, frozen after each world load unless `live` (077 G58).
+    map_props: map_props::Mode,
 }
 
 #[derive(Debug, Clone)]
@@ -91,7 +94,23 @@ impl CarlaWorld {
             vehicle_physics: None,
             state_dir: None,
             spectator: Spectator::new(spectator::Config::default()),
+            map_props: map_props::Mode::default(),
         }
+    }
+
+    /// The `map_props` key: the level's movable props frozen (the default) or live.
+    pub fn set_map_props(&mut self, mode: map_props::Mode) {
+        tracing::info!(
+            "Map props: {} ({})",
+            mode.name(),
+            match mode {
+                map_props::Mode::Frozen =>
+                    "physics off on every static.prop.mesh this server did \
+                                            not spawn, after each world load",
+                map_props::Mode::Live => "CARLA's own, simulated: cars can knock them about",
+            }
+        );
+        self.map_props = mode;
     }
 
     /// The spectator's keys (`spectator`, `spectator_height`).
@@ -365,6 +384,7 @@ impl World for CarlaWorld {
 
     fn load_world(&mut self, req: &wire::LoadWorld) -> WorldResult<wire::LoadWorldReply> {
         self.map_origin = req.map_origin.map_or([0.0; 3], |o| [o.x, o.y, o.z]);
+        let freeze_props = self.map_props == map_props::Mode::Frozen;
         let backend = self.backend()?;
         // `carla/world.yaml` names the town when the map directory's name is not it.
         if !req.world.is_empty() {
@@ -380,6 +400,18 @@ impl World for CarlaWorld {
         let result = backend.initialize(&episode);
         let ns = result.map_err(|e| refusal(e, backend))?;
         let episode_id = backend.episode_id();
+        // The level's own props stay where it put them (077 G58). A failure is logged, not a
+        // refusal: the run goes on with CARLA's props, as before.
+        if freeze_props {
+            let town = backend.current_town();
+            match backend.freeze_map_props() {
+                Ok((frozen, found)) => tracing::info!(
+                    "Map props: froze {frozen} of {found} static.prop.mesh actor(s) in {town} \
+                     (map_props: frozen)"
+                ),
+                Err(e) => tracing::warn!("Map props: could not freeze {town}'s props: {e:#}"),
+            }
+        }
         // CARLA's origin and the bridge's must agree, or every pose is off by the difference.
         let ours = backend.map_origin();
         if ours != self.map_origin {

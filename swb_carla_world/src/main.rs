@@ -22,6 +22,7 @@
 mod actor_census;
 mod backend;
 mod blueprint_boxes;
+mod map_props;
 mod sensor_release;
 mod spawn_ladder;
 mod spectator;
@@ -79,6 +80,8 @@ fn main() -> Result<()> {
     config.apply_ros_params(&params)?;
     // The spectator's keys are this server's alone (roadmap 068 step 2).
     let spectator = spectator::Config::load(&config_file)?;
+    // So is `map_props` (roadmap 077 G58): it changes results, so it is not a host setting.
+    let map_props = map_props::Config::load(&config_file)?;
     // The weather preset is CARLA's to name (roadmap 051): an unknown one stops the start.
     if !config.weather.trim().is_empty() {
         backend::carla::weather::preset_or_err(config.weather.trim())
@@ -164,6 +167,7 @@ fn main() -> Result<()> {
         .with_vehicle_physics(vehicle_physics)
         .with_state_dir(state_dir);
     world.set_spectator(spectator);
+    world.set_map_props(map_props.map_props);
     world.try_connect();
     let mut shell = Shell::new(world);
     let end = world_server::serve(&socket, &mut shell, &shutdown, budgets::IDLE_PROBE_AFTER)?;

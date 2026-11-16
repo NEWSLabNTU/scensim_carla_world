@@ -2105,6 +2105,53 @@ impl CarlaBackend {
         }
     }
 
+    /// Turn physics off on the level's own movable props (roadmap 077 G58,
+    /// `crate::map_props`): every `static.prop.mesh` this server did not spawn, found by a
+    /// census by id, in one `apply_batch_sync`. Returns `(frozen, found)`: how many took the
+    /// command and how many there were. Called after each world load; idempotent.
+    pub fn freeze_map_props(&mut self) -> Result<(usize, usize)> {
+        let census = self.census()?;
+        let spawned = &self.spawned_actors;
+        let ids = crate::map_props::to_freeze(&census.found, ENTITY_ROLE_PREFIX, |id| {
+            spawned.contains(id)
+        });
+        if ids.is_empty() {
+            return Ok((0, 0));
+        }
+        let commands = ids
+            .iter()
+            .map(|&actor_id| carla::rpc::Command::SetSimulatePhysics {
+                actor_id,
+                enabled: false,
+            })
+            .collect();
+        let client = std::sync::Arc::get_mut(&mut self.client)
+            .ok_or_else(|| eyre::eyre!("the CARLA client is held by a call that never returned"))?;
+        let responses = client.apply_batch_sync(commands, false).map_err(|e| {
+            eyre::eyre!("set_simulate_physics(false) on {} prop(s): {e}", ids.len())
+        })?;
+        let failed: Vec<String> = ids
+            .iter()
+            .zip(&responses)
+            .filter_map(|(id, r)| r.error().map(|e| format!("{id}: {e}")))
+            .collect();
+        if !failed.is_empty() {
+            tracing::warn!(
+                "Map props: {} of {} could not be frozen: {}",
+                failed.len(),
+                ids.len(),
+                failed.join("; ")
+            );
+        }
+        Ok((ids.len() - failed.len(), ids.len()))
+    }
+
+    /// The CARLA town the world holds now, by its final name component ("Town01").
+    pub fn current_town(&self) -> String {
+        let name = self.world.map().map(|m| m.name()).unwrap_or_default();
+        name.rsplit('/').next().unwrap_or(&name).to_string()
+    }
+
     /// Destroy an actor found by a census and, first, everything attached to it as the
     /// census saw them: CARLA leaves a destroyed vehicle's sensors alive, and an orphaned IMU
     /// segfaults the server on its next tick. Returns the children destroyed.

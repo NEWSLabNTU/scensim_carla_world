@@ -160,3 +160,14 @@ traffic_manager:
 spectator: off
 # Metres above the target.
 spectator_height: 50
+
+# The town's own movable props (roadmap 077 G58). Some towns place physics-simulated props in
+# the level: Town01 has plastic chairs (0.5 kg), tables (5 kg) and cones (24 kg) by the road,
+# CARLA type static.prop.mesh. No scenario declares them, so SSv2 cannot see them, and an NPC
+# that brushes one knocks it into a lane, where the ego may hit it: the verdict becomes
+# chance. `frozen` (the default) turns physics off on every static.prop.mesh this server did
+# not spawn, after each world load (every LoadWorld), and logs how many ("Map props: froze N
+# of N static.prop.mesh actor(s) in Town01"); they keep their colliders and stay put. `live`
+# leaves them to CARLA. A world-server setting, not a host one: it changes results. Props a
+# scenario spawns are never touched, and every contact still counts.
+map_props: frozen

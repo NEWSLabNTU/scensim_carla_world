@@ -85,3 +85,20 @@ reconnect.
 first vehicle spawned, then the first entity -- after every step (`follow`) or once per
 target (`once`); `off`, the default, leaves it alone. A camera someone moved (more than 0.1 m
 or 1 deg from where the server put it) stays theirs until the next `LoadWorld`.
+
+## Map props
+
+Some towns place movable props in the level itself: Town01 has plastic chairs (0.5 kg),
+tables (5 kg) and cones (24 kg) by the road, CARLA type `static.prop.mesh`. No scenario
+declares them, so SSv2 cannot see them, and an NPC that brushes one can knock it into the
+ego's lane. `map_props: frozen | live` in `swb_carla_world.yaml` decides what happens to
+them. `frozen`, the default, turns physics off on every `static.prop.mesh` the server did not
+spawn, after each world load (every `LoadWorld`, so a world CARLA reloaded or restarted with
+is covered too), and logs the count:
+
+    Map props: froze 44 of 44 static.prop.mesh actor(s) in Town01 (map_props: frozen)
+
+They keep their colliders and stay where the level put them. `live` leaves them to CARLA, as
+before 2026-11-16. It is a world-server setting, not a host one, because it changes results;
+`swb run` records it in each run's provenance (`world_server.map_props`). Props a scenario
+spawns are never touched, and a contact with a prop still counts.
