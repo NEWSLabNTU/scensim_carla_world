@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn the_table_is_found_beside_the_config_then_in_a_share() {
-        let root = std::env::temp_dir().join(format!("swb-boxes-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("scensim-boxes-{}", std::process::id()));
         let (config, share) = (root.join("config"), root.join("share"));
         std::fs::create_dir_all(&config).unwrap();
         std::fs::create_dir_all(&share).unwrap();

@@ -5,7 +5,7 @@
 //!
 //! CARLA 0.9.16 puts a blueprint's own tire friction (3.5 for the Model 3) back on live
 //! vehicles of that blueprint whenever another vehicle of it spawns, by any client, at once
-//! (swb b1c0684; measured 2026-11-15: the car whose physics was applied last loses it, the
+//! (scensim b1c0684; measured 2026-11-15: the car whose physics was applied last loses it, the
 //! rest of the physics stays, and a sensor, a walker or another blueprint's vehicle resets
 //! nothing). So the physics is kept, not only put on once:
 //! [`SpawnWatch`] says when an actor has appeared, and the backend reads its spec'd cars
@@ -141,7 +141,7 @@ const DECOY_AT: Location = Location {
 
 /// A decoy's role: an entity mark, so a world server that died between its spawn and its
 /// destroy leaves an orphan the next one reaps.
-pub const DECOY_ROLE: &str = "swb_entity:~tire_decoy";
+pub const DECOY_ROLE: &str = "scensim_entity:~tire_decoy";
 
 /// A car's motion, read before an apply rebuilds its PhysX vehicle at rest.
 #[derive(Debug, Clone, Copy)]

@@ -2634,6 +2634,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "scensim_carla_world"
+version = "0.1.0"
+dependencies = [
+ "carla",
+ "carla_physics_spec",
+ "color-eyre",
+ "ctrlc",
+ "eyre",
+ "libc",
+ "nalgebra",
+ "prost",
+ "roxmltree",
+ "scensim_core",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tracing",
+ "tracing-subscriber",
+ "zmq",
+]
+
+[[package]]
+name = "scensim_core"
+version = "0.1.0"
+dependencies = [
+ "eyre",
+ "libc",
+ "prost",
+ "prost-build",
+ "roxmltree",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tracing",
+ "zmq",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2843,45 +2882,6 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
-name = "swb_carla_world"
-version = "0.1.0"
-dependencies = [
- "carla",
- "carla_physics_spec",
- "color-eyre",
- "ctrlc",
- "eyre",
- "libc",
- "nalgebra",
- "prost",
- "roxmltree",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "swb_core",
- "tracing",
- "tracing-subscriber",
- "zmq",
-]
-
-[[package]]
-name = "swb_core"
-version = "0.1.0"
-dependencies = [
- "eyre",
- "libc",
- "prost",
- "prost-build",
- "roxmltree",
- "serde",
- "serde_json",
- "serde_yaml",
- "tracing",
- "zmq",
-]
 
 [[package]]
 name = "syn"
@@ -3626,19 +3626,3 @@ checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
 dependencies = [
  "zune-core",
 ]
-
-[[patch.unused]]
-name = "builtin_interfaces"
-version = "0.0.0"
-
-[[patch.unused]]
-name = "rcl_interfaces"
-version = "0.0.0"
-
-[[patch.unused]]
-name = "rmw_dds_common"
-version = "0.0.0"
-
-[[patch.unused]]
-name = "swb_interfaces"
-version = "0.0.0"

@@ -1,19 +1,19 @@
 [package]
-name = "swb_carla_world"
+name = "scensim_carla_world"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "The CARLA world server: CARLA behind the world protocol, for the scenario bridge"
 
 [[bin]]
-name = "swb_carla_world"
+name = "scensim_carla_world"
 path = "src/main.rs"
 
 [package.metadata.ros]
 install_to_share = ["config", "launch"]
 
 [dependencies]
-swb_core = { path = "../deps/swb_world_protocol/swb_core" }
+scensim_core = { path = "../deps/swb_world_protocol/scensim_core" }
 # sim_vehicle_spec's carla_physics.yaml as types (roadmap 051 K3)
 carla_physics_spec = { path = "../deps/sim_vehicle_spec/crates/carla_physics_spec" }
 # CARLA: the version is the workspace's feature (CLAUDE.md, "The CARLA version is a Cargo

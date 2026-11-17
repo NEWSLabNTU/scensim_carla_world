@@ -2,7 +2,7 @@
 """Live check: the CARLA world server keeps the spec's physics on its cars across spawns.
 
 CARLA 0.9.16 puts a blueprint's own tire friction (3.5 for the Model 3) back on live vehicles
-of that blueprint whenever another vehicle of it spawns, by any client (swb b1c0684; the car
+of that blueprint whenever another vehicle of it spawns, by any client (scensim b1c0684; the car
 whose physics was applied last; a sensor, a walker or another blueprint resets nothing). The world server re-applies the
 spec after each spawn it makes and after each tick that shows it someone else's.
 
@@ -33,9 +33,9 @@ import yaml
 import zmq
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / "deps/swb_world_protocol/swb_world_server"))
-from swb_world_server import protocol as pb  # noqa: E402
-from swb_world_server.lifetime import start_time  # noqa: E402
+sys.path.insert(0, str(HERE.parent / "deps/swb_world_protocol/scensim_world_server"))
+from scensim_world_server import protocol as pb  # noqa: E402
+from scensim_world_server.lifetime import start_time  # noqa: E402
 
 MODEL3 = "vehicle.tesla.model3"
 

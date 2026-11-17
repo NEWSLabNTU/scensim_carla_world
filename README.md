@@ -1,4 +1,4 @@
-# swb_carla_world
+# scensim_carla_world
 
 [CARLA](https://carla.org/) 0.9.16 behind the world protocol of
 [scenario-world-bridge](https://github.com/NEWSLabNTU/scenario-world-bridge): the CARLA
@@ -7,21 +7,21 @@
 `agent` vehicles), sets traffic lights, weather and road friction, ticks CARLA synchronously
 and reports contacts. It is the only code of the project that uses carla-rust.
 
-One server per CARLA: it holds `/tmp/swb-locks/carla-<host>-<port>.lock` for its whole
+One server per CARLA: it holds `/tmp/scensim-locks/carla-<host>-<port>.lock` for its whole
 life, and exits 75 for its supervisor when CARLA goes away.
 
 ```bash
 git submodule update --init --recursive   # deps/swb_world_protocol
 just build
-play_launch launch swb_carla_world swb_carla_world.launch.xml port:=5591 carla_port:=2000
-swb_world_check conformance tcp://127.0.0.1:5591 --map <map dir>   # from swb_world_protocol
+play_launch launch scensim_carla_world scensim_carla_world.launch.xml port:=5591 carla_port:=2000
+scensim_world_check conformance tcp://127.0.0.1:5591 --map <map dir>   # from scensim_world_protocol
 ```
 
 | Path | What |
 |---|---|
-| `swb_carla_world/` | The ROS package (ament_cargo): the server, `launch/swb_carla_world.launch.xml`, `config/swb_carla_world.yaml`, the measured blueprint table `config/blueprint_boxes_0.9.16.yaml` |
+| `scensim_carla_world/` | The ROS package (ament_cargo): the server, `launch/scensim_carla_world.launch.xml`, `config/scensim_carla_world.yaml`, the measured blueprint table `config/blueprint_boxes_0.9.16.yaml` |
 | `scripts/measure_blueprint_boxes.py` | Re-measures that table (boxes and axles) from a running CARLA |
-| `deps/swb_world_protocol` | The protocol and its Rust shell (`swb_core`), a submodule |
+| `deps/swb_world_protocol` | The protocol and its Rust shell (`scensim_core`), a submodule |
 | `deps/sim_vehicle_spec` | The vehicle specs; the ego's `carla_physics.yaml` comes from here, a submodule |
 
 The CARLA version is the `carla-0916` feature of the `carla` dependency (`Cargo.toml`); a
@@ -49,7 +49,7 @@ CARLA (the ego, two agent Model 3s, a scenario NPC, another client's Model 3 and
 
 ## Time and episodes
 
-Simulation time is `nanos(elapsed_seconds) + BASE_NS` (`swb_core::sim_time`); the episode is
+Simulation time is `nanos(elapsed_seconds) + BASE_NS` (`scensim_core::sim_time`); the episode is
 CARLA's world id, in `LoadWorldReply.episode_id` and `StepReply.episode_id`. A world load
 starts a new episode, and every vehicle stack of the old one ends (acb_bridge exits).
 
@@ -61,8 +61,8 @@ named keep their current values. `GetWeather` returns all fourteen and the prese
 match. Through the bridge:
 
 ```bash
-ros2 service call /scenario_world_bridge/set_weather swb_interfaces/srv/SetWeather "{preset: ClearNoon}"
-ros2 service call /scenario_world_bridge/set_weather swb_interfaces/srv/SetWeather \
+ros2 service call /scenario_world_bridge/set_weather scensim_interfaces/srv/SetWeather "{preset: ClearNoon}"
+ros2 service call /scenario_world_bridge/set_weather scensim_interfaces/srv/SetWeather \
     "{names: [cloudiness, sun_altitude_angle], values: [30.0, 60.0]}"
 ```
 
@@ -74,14 +74,14 @@ ros2 service call /scenario_world_bridge/set_weather swb_interfaces/srv/SetWeath
 | `sun_altitude_angle` | degrees, -90 (midnight) to 90 (midday) |
 | `fog_falloff`, `scattering_intensity`, `mie_scattering_scale`, `rayleigh_scattering_scale`, `dust_storm` | as CARLA's [`WeatherParameters`](https://carla.readthedocs.io/en/0.9.16/python_api/#carla.WeatherParameters) |
 
-The server keeps the weather asked for -- `weather:` in `swb_carla_world.yaml` (checked at
+The server keeps the weather asked for -- `weather:` in `scensim_carla_world.yaml` (checked at
 start), then the last `SetWeather` -- and applies it again after every world load and
 reconnect.
 
 ## Spectator
 
 `spectator: follow | once | off` and `spectator_height` (m, default 50) in
-`swb_carla_world.yaml` move CARLA's spectator straight down over the ego -- with no ego, the
+`scensim_carla_world.yaml` move CARLA's spectator straight down over the ego -- with no ego, the
 first vehicle spawned, then the first entity -- after every step (`follow`) or once per
 target (`once`); `off`, the default, leaves it alone. A camera someone moved (more than 0.1 m
 or 1 deg from where the server put it) stays theirs until the next `LoadWorld`.
@@ -91,7 +91,7 @@ or 1 deg from where the server put it) stays theirs until the next `LoadWorld`.
 Some towns place movable props in the level itself: Town01 has plastic chairs (0.5 kg),
 tables (5 kg) and cones (24 kg) by the road, CARLA type `static.prop.mesh`. No scenario
 declares them, so SSv2 cannot see them, and an NPC that brushes one can knock it into the
-ego's lane. `map_props: frozen | live` in `swb_carla_world.yaml` decides what happens to
+ego's lane. `map_props: frozen | live` in `scensim_carla_world.yaml` decides what happens to
 them. `frozen`, the default, turns physics off on every `static.prop.mesh` the server did not
 spawn, after each world load (every `LoadWorld`, so a world CARLA reloaded or restarted with
 is covered too), and logs the count:
@@ -100,5 +100,5 @@ is covered too), and logs the count:
 
 They keep their colliders and stay where the level put them. `live` leaves them to CARLA, as
 before 2026-11-16. It is a world-server setting, not a host one, because it changes results;
-`swb run` records it in each run's provenance (`world_server.map_props`). Props a scenario
+`scensim run` records it in each run's provenance (`world_server.map_props`). Props a scenario
 spawns are never touched, and a contact with a prop still counts.

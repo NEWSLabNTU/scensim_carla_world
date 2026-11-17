@@ -1,17 +1,17 @@
-//! The tick gate: swb waits, before each `world.tick()`, until every follower that asked for
-//! it has finished the frame swb ticked last.
+//! The tick gate: scensim waits, before each `world.tick()`, until every follower that asked for
+//! it has finished the frame scensim ticked last.
 //!
-//! swb is the only process that ticks CARLA (docs/design/time-and-ticking.md). A process
-//! that follows swb's frames instead of ticking (2026-vehicle-consensus' junction harness)
-//! acts a frame late, or skips frames, whenever one of its rounds takes longer than swb's
-//! frame. With the gate the follower still never ticks, but swb holds the next tick until the
+//! scensim is the only process that ticks CARLA (docs/design/time-and-ticking.md). A process
+//! that follows scensim's frames instead of ticking (2026-vehicle-consensus' junction harness)
+//! acts a frame late, or skips frames, whenever one of its rounds takes longer than scensim's
+//! frame. With the gate the follower still never ticks, but scensim holds the next tick until the
 //! follower says it is done with the current frame, so the follower sees every frame.
 //!
 //! Several followers can join at once (the harness, and ns-3 emulating the network in
 //! lockstep with the world): each is known by the address its datagrams come from, and a
 //! tick waits for all of them.
 //!
-//! Protocol, UDP datagrams to the gate's address (`SWB_TICK_GATE`, or `tick_gate` in
+//! Protocol, UDP datagrams to the gate's address (`SCENSIM_TICK_GATE`, or `tick_gate` in
 //! `bridge_config.yaml`):
 //!
 //! - `HELLO` -- a follower joins: from now on every tick waits for it (a `DONE` joins too);
@@ -21,7 +21,7 @@
 //! The wait is bounded (`tick_gate_timeout_ms`): a follower that does not answer in time does
 //! not stop the simulation, the tick goes ahead and the miss is counted, per follower. A follower silent
 //! for [`SILENT_LEAVES`] is taken as gone, so a crashed follower costs at most a few
-//! bounded waits. The wait runs in swb's request path before the tick, never inside a tick
+//! bounded waits. The wait runs in scensim's request path before the tick, never inside a tick
 //! or a sensor callback.
 
 use std::collections::BTreeMap;
@@ -161,7 +161,7 @@ impl TickGate {
         self.followers.values().any(|f| f.state.holds(frame, now))
     }
 
-    /// Before the tick that follows `frame` (the frame swb ticked last): wait until every
+    /// Before the tick that follows `frame` (the frame scensim ticked last): wait until every
     /// follower finished it, at most the gate's timeout.
     pub fn wait_for(&mut self, frame: u64) {
         self.drain();

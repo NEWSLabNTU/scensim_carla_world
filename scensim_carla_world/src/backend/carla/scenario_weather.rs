@@ -10,7 +10,7 @@
 //! CARLA's renderer. A sun's illuminance has no CARLA counterpart and is ignored.
 
 use super::weather::Weather;
-use swb_core::environment::{PrecipitationType, ScenarioWeather};
+use scensim_core::environment::{PrecipitationType, ScenarioWeather};
 
 /// The weather fields the scenario has set so far; a part not given keeps its last value.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -91,7 +91,7 @@ pub fn carla_sun(azimuth: f64, elevation: f64) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use swb_core::environment::{Precipitation, Sun, Wind};
+    use scensim_core::environment::{Precipitation, Sun, Wind};
 
     fn clear_noon() -> Weather {
         super::super::weather::preset("ClearNoon").unwrap().1

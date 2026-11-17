@@ -6,11 +6,11 @@
 //! with (the same numbers as `isaac_world/config/surface_classes.yaml`, which the tests
 //! check). The wetness also changes the weather's look: `wetness` and
 //! `precipitation_deposits` (puddles), which on 0.9.16 are rendering only. Standing water,
-//! hydroplaning and the map's zones (`swb.zone.*`) are the Isaac world server's surface
+//! hydroplaning and the map's zones (`scensim.zone.*`) are the Isaac world server's surface
 //! layer; their properties are refused here.
 
 use super::weather::Weather;
-use swb_core::sim::RoadCondition;
+use scensim_core::sim::RoadCondition;
 
 /// Asphalt's friction factor per wetness level, dry first: `surface_classes.yaml`'s
 /// `classes.asphalt.wet`.
@@ -44,10 +44,10 @@ pub struct Applied {
 /// The road condition as CARLA applies it, or why not (every problem, one per line).
 pub fn applied(rc: &RoadCondition) -> Result<Applied, String> {
     let mut problems = Vec::new();
-    let refused: Vec<&str> = rc.swb_properties().map(|(k, _)| k.as_str()).collect();
+    let refused: Vec<&str> = rc.scensim_properties().map(|(k, _)| k.as_str()).collect();
     if !refused.is_empty() {
         problems.push(format!(
-            "the CARLA world server has no surface map: zones and other swb properties are \
+            "the CARLA world server has no surface map: zones and other scensim properties are \
              the Isaac world server's (refused: {})",
             refused.join(", ")
         ));
@@ -117,13 +117,13 @@ mod tests {
             -1.0,
             "dry",
             &[
-                ("swb.zone.ford.water_depth", "0.1"),
-                ("swb.zone.pit.class", "mud_wet"),
+                ("scensim.zone.ford.water_depth", "0.1"),
+                ("scensim.zone.pit.class", "mud_wet"),
             ],
         ))
         .unwrap_err();
         assert!(
-            e.contains("swb.zone.ford.water_depth, swb.zone.pit.class"),
+            e.contains("scensim.zone.ford.water_depth, scensim.zone.pit.class"),
             "{e}"
         );
         assert!(e.contains("frictionScaleFactor -1"), "{e}");
@@ -136,10 +136,12 @@ mod tests {
     /// scenario brakes alike on both simulators.
     #[test]
     fn wet_factors_match_the_isaac_class_table() {
-        // Isaac's table is swb_isaac_world's; scenario-world-bridge, which holds both world
-        // servers, points SWB_ISAAC_SURFACE_CLASSES at it in its `just test`.
-        let Some(path) = std::env::var_os("SWB_ISAAC_SURFACE_CLASSES") else {
-            eprintln!("SKIPPED: SWB_ISAAC_SURFACE_CLASSES unset; not compared with Isaac's table");
+        // Isaac's table is scensim_isaac_world's; scenario-world-bridge, which holds both world
+        // servers, points SCENSIM_ISAAC_SURFACE_CLASSES at it in its `just test`.
+        let Some(path) = std::env::var_os("SCENSIM_ISAAC_SURFACE_CLASSES") else {
+            eprintln!(
+                "SKIPPED: SCENSIM_ISAAC_SURFACE_CLASSES unset; not compared with Isaac's table"
+            );
             return;
         };
         let table: serde_yaml::Value =

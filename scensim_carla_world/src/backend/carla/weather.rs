@@ -1,6 +1,6 @@
 //! CARLA's weather: its `WeatherParameters` as plain data, CARLA's presets by name, and the
 //! world protocol's generic weather in CARLA's terms (roadmap 051: what was the bridge's
-//! `swb_interfaces/msg/Weather` lives here, with the CARLA world server).
+//! `scensim_interfaces/msg/Weather` lives here, with the CARLA world server).
 //!
 //! A `set_weather` names a preset (`ClearNoon`, ...; any case, `_`/`-`/spaces ignored) or
 //! parameters by [`FIELD_NAMES`]; parameters not named keep CARLA's current values. A reply
@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use carla::rpc::WeatherParameters;
-use swb_core::weather::{Weather as Generic, WeatherRequest};
+use scensim_core::weather::{Weather as Generic, WeatherRequest};
 
 /// Every field of CARLA 0.9.16's `WeatherParameters`, as plain data.
 ///

@@ -41,7 +41,7 @@ impl Mode {
     }
 }
 
-/// The `map_props` key of `swb_carla_world.yaml`, this server's alone.
+/// The `map_props` key of `scensim_carla_world.yaml`, this server's alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
@@ -49,7 +49,7 @@ pub struct Config {
 }
 
 impl Config {
-    /// The key of `text` (a whole `swb_carla_world.yaml`); every other key is ignored.
+    /// The key of `text` (a whole `scensim_carla_world.yaml`); every other key is ignored.
     pub fn parse(text: &str) -> Result<Self> {
         if text.trim().is_empty() {
             return Ok(Self::default());
@@ -69,7 +69,7 @@ impl Config {
 }
 
 /// The level's props among `found`: every `static.prop.mesh` that this server did not spawn
-/// (`own`) and that carries no swb entity mark (`mark_prefix`, a previous server's).
+/// (`own`) and that carries no scensim entity mark (`mark_prefix`, a previous server's).
 pub fn to_freeze(found: &[Found], mark_prefix: &str, own: impl Fn(u32) -> bool) -> Vec<u32> {
     found
         .iter()
@@ -98,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn map_props_are_frozen_and_swb_props_are_left_alone() {
+    fn map_props_are_frozen_and_scensim_props_are_left_alone() {
         let world = vec![
             // Town01's own: a chair, a table, a cone.
             actor(130, MAP_PROP_TYPE, None),
@@ -108,16 +108,23 @@ mod tests {
             actor(2, "traffic.traffic_light", None),
             actor(3, "static.trigger.traffic_sign", None),
             // Spawned by this server: a misc object, and one that happens to be a mesh.
-            actor(500, "static.prop.streetbarrier", Some("swb_entity:cone_1")),
-            actor(501, MAP_PROP_TYPE, Some("swb_entity:box_1")),
+            actor(
+                500,
+                "static.prop.streetbarrier",
+                Some("scensim_entity:cone_1"),
+            ),
+            actor(501, MAP_PROP_TYPE, Some("scensim_entity:box_1")),
             actor(502, MAP_PROP_TYPE, None),
             // A previous server's, marked: the reaper's, not ours to freeze.
-            actor(400, MAP_PROP_TYPE, Some("swb_entity:old")),
+            actor(400, MAP_PROP_TYPE, Some("scensim_entity:old")),
             // A vehicle.
             actor(600, "vehicle.tesla.model3", Some("hero")),
         ];
         let own = |id: u32| id >= 500;
-        assert_eq!(to_freeze(&world, "swb_entity:", own), vec![130, 131, 173]);
+        assert_eq!(
+            to_freeze(&world, "scensim_entity:", own),
+            vec![130, 131, 173]
+        );
     }
 
     #[test]

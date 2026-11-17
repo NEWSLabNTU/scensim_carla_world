@@ -1,4 +1,4 @@
-# swb_carla_world: CARLA behind the world protocol. Its dependency, swb_world_protocol, is a
+# scensim_carla_world: CARLA behind the world protocol. Its dependency, scensim_world_protocol, is a
 # submodule under deps/ (git submodule update --init --recursive).
 
 default:
@@ -10,7 +10,7 @@ build:
     set -e
     unset CARLA_DIR   # carla-sys reads it as a CARLA source tree
     source /opt/ros/humble/setup.bash
-    colcon build --symlink-install --base-paths swb_carla_world \
+    colcon build --symlink-install --base-paths scensim_carla_world \
         --cargo-args --profile dev-release
 
 # Rust tests

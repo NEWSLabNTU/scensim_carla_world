@@ -29,7 +29,7 @@ pub const MOVED_METRES: f64 = 0.1;
 /// More than this, the same.
 pub const MOVED_DEGREES: f64 = 1.0;
 
-/// `spectator` in `swb_carla_world.yaml`.
+/// `spectator` in `scensim_carla_world.yaml`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
@@ -42,7 +42,7 @@ pub enum Mode {
     Follow,
 }
 
-/// The spectator's keys of `swb_carla_world.yaml`. They are the CARLA world server's alone,
+/// The spectator's keys of `scensim_carla_world.yaml`. They are the CARLA world server's alone,
 /// so they are read here rather than in the bridge's shared `BridgeConfig` (which ignores
 /// them).
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
@@ -63,7 +63,7 @@ impl Default for Config {
 }
 
 impl Config {
-    /// The two keys of `text` (a whole `swb_carla_world.yaml`); every other key is ignored.
+    /// The two keys of `text` (a whole `scensim_carla_world.yaml`); every other key is ignored.
     pub fn parse(text: &str) -> Result<Self> {
         // An empty file is an empty document, not a mapping.
         if text.trim().is_empty() {
@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn a_missing_file_is_the_defaults() {
-        let c = Config::load(Path::new("/nonexistent/swb_carla_world.yaml")).unwrap();
+        let c = Config::load(Path::new("/nonexistent/scensim_carla_world.yaml")).unwrap();
         assert_eq!(c, Config::default());
     }
 

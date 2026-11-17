@@ -1,12 +1,12 @@
 //! The CARLA world server (roadmap 046): CARLA behind the world protocol, for the scenario
 //! bridge.
 //!
-//!     swb_carla_world [--generate-signal-table <map dir>] --ros-args -p port:=5591 \
+//!     scensim_carla_world [--generate-signal-table <map dir>] --ros-args -p port:=5591 \
 //!         -p carla_host:=localhost -p carla_port:=2000 -p ssv2_port:=5555 \
-//!         [-p config_file:=<swb_carla_world.yaml>] [-p state_dir:=<project>/state]
+//!         [-p config_file:=<scensim_carla_world.yaml>] [-p state_dir:=<project>/state]
 //!
 //! One process per CARLA server, and the only one that ticks it: it holds an exclusive lock
-//! on `/tmp/swb-locks/carla-<host>-<port>.lock` for its whole life, and a second one is
+//! on `/tmp/scensim-locks/carla-<host>-<port>.lock` for its whole life, and a second one is
 //! refused (exit 1, after 30 s so a supervisor's respawn does not spin). It binds its world
 //! port before anything else, so a second server on the port is refused too. It answers the protocol at once; until CARLA is up its
 //! `Hello` says not ready, and it keeps trying. A CARLA call that never returns, or a CARLA
@@ -30,7 +30,7 @@ mod tick_gate;
 mod tick_watchdog;
 mod world;
 
-pub(crate) use swb_core::{
+pub(crate) use scensim_core::{
     agent_link, autopilot, body_clearance, budgets, config, contact_report, coordinate_conversion,
     entity_manager, environment, gap_trace, lanelet_map, map_resolver, npc_tracking, proto,
     ros_args, sim_time, weather,
@@ -43,7 +43,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use color_eyre::eyre::{self, Result};
-use swb_core::world_server::{self, End, Shell, World};
+use scensim_core::world_server::{self, End, Shell, World};
 
 /// Exit status when a CARLA call hung or CARLA went away (`EX_TEMPFAIL`): restarted.
 const RESTART_EXIT: i32 = 75;
@@ -52,6 +52,15 @@ const REFUSED_EXIT: i32 = 1;
 /// How long a refused server waits before it exits: play_launch respawns a node on any exit,
 /// so a refusal must not turn into a loop that floods the log every respawn_delay.
 const REFUSED_PAUSE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// This server's host settings renamed by roadmap 080 (scensim): `(old, new)`, refused at
+/// start, naming the new (scensim_core's own are in its `config::RENAMED_ENV`).
+const RENAMED_ENV: &[(&str, &str)] = &[
+    ("SWB_ISAAC_SURFACE_CLASSES", "SCENSIM_ISAAC_SURFACE_CLASSES"),
+    ("SWB_TEST_SPAWN_TIMEOUT_MS", "SCENSIM_TEST_SPAWN_TIMEOUT_MS"),
+    ("SWB_TEST_HANG_TICK_AT", "SCENSIM_TEST_HANG_TICK_AT"),
+    ("SWB_TEST_HANG_TICK_TOKEN", "SCENSIM_TEST_HANG_TICK_TOKEN"),
+];
 
 /// Refuse to run: say why, wait out [`REFUSED_PAUSE`], exit 1.
 fn refuse(why: &eyre::Report) -> ! {
@@ -70,13 +79,20 @@ fn main() -> Result<()> {
     world_server::die_with_parent();
 
     let params = ros_args::RosParams::from_args(std::env::args().skip(1))?;
-    let config_file = ros_args::config_file_for(&params, "swb_carla_world", "swb_carla_world.yaml");
+    let config_file =
+        ros_args::config_file_for(&params, "scensim_carla_world", "scensim_carla_world.yaml");
     let config_dir = config_file
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_default();
     let mut config = config::BridgeConfig::load_for(&config_file, config::ConfigOwner::CarlaWorld)?;
-    config.apply_env_overrides();
+    // the renamed host settings (roadmap 080): the old names are refused, naming the new
+    if let Err(e) = config
+        .apply_env_overrides()
+        .and_then(|()| scensim_core::config::refuse_renamed_env(RENAMED_ENV))
+    {
+        refuse(&e);
+    }
     config.apply_ros_params(&params)?;
     // The spectator's keys are this server's alone (roadmap 068 step 2).
     let spectator = spectator::Config::load(&config_file)?;
@@ -198,10 +214,10 @@ fn main() -> Result<()> {
 }
 
 /// The lock that makes this the only world server ticking `host:port`: an exclusive `flock`
-/// on `/tmp/swb-locks/carla-<host>-<port>.lock`, released by the kernel when the process
+/// on `/tmp/scensim-locks/carla-<host>-<port>.lock`, released by the kernel when the process
 /// ends however it ends. The holder's pid is written in it, for the refusal's message.
 fn carla_lock(host: &str, port: u16) -> Result<std::fs::File> {
-    let dir = PathBuf::from("/tmp/swb-locks");
+    let dir = PathBuf::from("/tmp/scensim-locks");
     if !dir.exists() {
         std::fs::create_dir_all(&dir)?;
         // Every user's world servers share it, as they share the CARLA ports.
@@ -241,4 +257,26 @@ fn generate_signal_table_arg() -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod renamed_env_tests {
+    use super::*;
+
+    #[test]
+    fn every_renamed_host_setting_names_what_the_server_reads() {
+        // roadmap 080: each old SWB_* is refused naming the SCENSIM_* the code reads
+        let new: Vec<&str> = RENAMED_ENV.iter().map(|(_, n)| *n).collect();
+        for read in [
+            tick_watchdog::HangHook::FRAME_ENV,
+            tick_watchdog::HangHook::TOKEN_ENV,
+            "SCENSIM_TEST_SPAWN_TIMEOUT_MS",
+            "SCENSIM_ISAAC_SURFACE_CLASSES",
+        ] {
+            assert!(new.contains(&read), "{read} has no retired name");
+        }
+        for (old, n) in RENAMED_ENV {
+            assert_eq!(old.strip_prefix("SWB_"), n.strip_prefix("SCENSIM_"));
+        }
+    }
 }

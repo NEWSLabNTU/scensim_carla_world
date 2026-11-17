@@ -1,23 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   The CARLA world server (roadmap 046): CARLA behind the world protocol, on 127.0.0.1:<port>.
-  Included by swb_launch carla_simulation.launch.xml, beside the bridge and the agent relay,
+  Included by scensim_launch carla_simulation.launch.xml, beside the bridge and the agent relay,
   so the three share one launch, one process group and one stop.
 
-    play_launch launch swb_carla_world swb_carla_world.launch.xml [port:=5591] [carla_host:=localhost]
+    play_launch launch scensim_carla_world scensim_carla_world.launch.xml [port:=5591] [carla_host:=localhost]
         [carla_port:=2000] [ssv2_port:=5555] [config_file:=...] [npc_contact_sensors:=false]
         [vehicle_physics:=<carla_physics.yaml>|none] [state_dir:=<project>/state]
 
   One per CARLA server: a second against the same CARLA, or on the same port, exits 1 at once
-  (it holds /tmp/swb-locks/carla-<host>-<port>.lock and binds its port first). A hung CARLA
+  (it holds /tmp/scensim-locks/carla-<host>-<port>.lock and binds its port first). A hung CARLA
   call or a CARLA that went away ends it with status 75, and the launch restarts it; it then
   waits for CARLA, answering the bridge's probes meanwhile. Empty arguments keep the config
   file's value.
 -->
 <launch>
   <arg name="port" default="5591" description="the world protocol's REP port on 127.0.0.1"/>
-  <arg name="config_file" default="$(find-pkg-share swb_carla_world)/config/swb_carla_world.yaml"
-       description="swb_carla_world.yaml (CARLA, blueprints, map aliases, ticks, Traffic Manager, sensor release)"/>
+  <arg name="config_file" default="$(find-pkg-share scensim_carla_world)/config/scensim_carla_world.yaml"
+       description="scensim_carla_world.yaml (CARLA, blueprints, map aliases, ticks, Traffic Manager, sensor release)"/>
   <arg name="carla_host" default="" description="CARLA host; empty keeps the config file's"/>
   <arg name="carla_port" default="" description="CARLA RPC port; empty keeps the config file's"/>
   <arg name="ssv2_port" default=""
@@ -31,7 +31,7 @@
   <arg name="state_dir" default=""
        description="the stack's state directory: a missing or stale signal table is written to &lt;state_dir&gt;/&lt;map&gt;/ (traffic_lights.yaml, carla/traffic_lights.yaml) at the first Initialize on a map, for acb's traffic_light_state_path; empty (the default) = beside the map (roadmap 076 A9)"/>
 
-  <node pkg="swb_carla_world" exec="swb_carla_world" name="swb_carla_world"
+  <node pkg="scensim_carla_world" exec="scensim_carla_world" name="scensim_carla_world"
         output="screen" respawn="true" respawn_delay="2.0">
     <param name="port" value="$(var port)"/>
     <param name="config_file" value="$(var config_file)"/>

@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["swb_carla_world"]
-# deps/ holds this repository's dependencies as submodules (swb_world_protocol): path
+members = ["scensim_carla_world"]
+# deps/ holds this repository's dependencies as submodules (scensim_world_protocol): path
 # dependencies, built here, never members.
 exclude = ["deps"]
 

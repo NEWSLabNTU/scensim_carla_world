@@ -88,7 +88,7 @@ enum SpawnKind {
     /// A scenario NPC vehicle. SSv2 computes its path and teleports it each frame.
     Npc,
     /// A scenario NPC vehicle whose controller is `simulator_autopilot`: CARLA PhysX moves
-    /// it, Traffic Manager steers it, and SSv2 adopts the pose swb reads back (`autopilot`).
+    /// it, Traffic Manager steers it, and SSv2 adopts the pose scensim reads back (`autopilot`).
     AutopilotNpc,
     /// A scenario pedestrian. Also teleported -- SSv2's behaviour plugins own the walk.
     Pedestrian,
@@ -96,7 +96,7 @@ enum SpawnKind {
     MiscObject,
     /// A scenario vehicle whose controller is `agent`: CARLA PhysX moves it under the
     /// control of the autopilot behind the agent registered as its entity name (typically
-    /// a full Autoware); SSv2 adopts the pose swb reads back (`agent_link`).
+    /// a full Autoware); SSv2 adopts the pose scensim reads back (`agent_link`).
     AgentVehicle,
 }
 
@@ -459,7 +459,7 @@ use crate::sim_time::{fmt_ns, sim_ns};
 use crate::spawn_ladder;
 use crate::spectator::View;
 use crate::weather::{WeatherReply, WeatherRequest};
-use swb_core::environment::{self, TimeOfDay};
+use scensim_core::environment::{self, TimeOfDay};
 
 /// `(elapsed_seconds, delta_seconds)` of `world`'s current snapshot.
 /// Why a watched tick failed (roadmap 032 N5).
@@ -486,7 +486,7 @@ fn carla_state_for_log(world: &World) -> String {
     let world = world.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     let spawned = std::thread::Builder::new()
-        .name("swb-hung-state".into())
+        .name("scensim-hung-state".into())
         .spawn(move || {
             let frame = world
                 .snapshot()
@@ -532,7 +532,7 @@ struct Census {
 }
 
 /// The test-only spawn timeout hook's variable (034 step 4).
-const SPAWN_TIMEOUT_ENV: &str = "SWB_TEST_SPAWN_TIMEOUT_MS";
+const SPAWN_TIMEOUT_ENV: &str = "SCENSIM_TEST_SPAWN_TIMEOUT_MS";
 
 fn spawn_timeout_hook_from_env() -> Option<Duration> {
     parse_spawn_timeout_hook(std::env::var(SPAWN_TIMEOUT_ENV).ok().as_deref())
@@ -545,7 +545,7 @@ fn parse_spawn_timeout_hook(value: Option<&str>) -> Option<Duration> {
 
 /// How far above the id watermark a timed-out spawn's actor is looked for: actor ids are
 /// handed out one per actor server-wide, so this covers every actor anybody (acb's sensors,
-/// other clients) created since the last id swb saw.
+/// other clients) created since the last id scensim saw.
 const LATE_ACTOR_ID_MARGIN: u32 = 4096;
 
 /// CARLA's error for a spawn blocked at its point (`ActorSpawnResult.cpp`).
@@ -606,7 +606,7 @@ impl spawn_ladder::SpawnBackend for CarlaSpawn<'_> {
         let ids: Vec<u32> = (watermark.saturating_add(1)
             ..=watermark.saturating_add(LATE_ACTOR_ID_MARGIN))
             .collect();
-        // Through a client of its own: swb's answers from its actor cache first, which still
+        // Through a client of its own: scensim's answers from its actor cache first, which still
         // holds actors destroyed since -- the previous scenario's `hero` was adopted that way
         // in the first live run (034 step 4 results).
         let probe = self
@@ -664,9 +664,9 @@ enum FrameAction {
 /// server is gone or hung, and the next call will wait just as long.
 const SLOW_FAILURE: Duration = Duration::from_secs(5);
 
-/// The `role_name` prefix swb puts on every actor it spawns for an SSv2 entity that has no
+/// The `role_name` prefix scensim puts on every actor it spawns for an SSv2 entity that has no
 /// configured role, so a later bridge can tell them from everybody else's actors.
-const ENTITY_ROLE_PREFIX: &str = "swb_entity:";
+const ENTITY_ROLE_PREFIX: &str = "scensim_entity:";
 
 fn entity_role_name(entity: &str) -> String {
     format!("{ENTITY_ROLE_PREFIX}{entity}")
@@ -707,7 +707,9 @@ fn agent_role_conflict(entity: &str, ego_role: &str) -> Option<String> {
         ));
     }
     if is_entity_role_name(entity) {
-        return Some(format!("'{entity}' collides with swb's own entity marks"));
+        return Some(format!(
+            "'{entity}' collides with scensim's own entity marks"
+        ));
     }
     None
 }
@@ -1063,7 +1065,7 @@ pub struct CarlaBackend {
     /// actor: physics off, teleported to SSv2's pose every frame for the rest of the
     /// episode, flagged `kinematic` in the gap trace.
     kinematic_fallback: HashSet<u32>,
-    /// The box of every physics body swb spawned (ego, tracked NPCs, simulator- and
+    /// The box of every physics body scensim spawned (ego, tracked NPCs, simulator- and
     /// agent-driven vehicles), by actor: what a tracked NPC's proximity hold measures
     /// against (roadmap 032 N2).
     body_boxes: HashMap<u32, BodyBox>,
@@ -1077,7 +1079,7 @@ pub struct CarlaBackend {
     /// The tick gate (`tick_gate`, [`crate::tick_gate`]): a follower that joined it is
     /// waited for before every tick.
     tick_gate: Option<crate::tick_gate::TickGate>,
-    /// Test-only: every spawn RPC's timeout (`SWB_TEST_SPAWN_TIMEOUT_MS`, 034 step 4), to
+    /// Test-only: every spawn RPC's timeout (`SCENSIM_TEST_SPAWN_TIMEOUT_MS`, 034 step 4), to
     /// force the timed-out spawn that is then adopted. `None` in every product run.
     spawn_timeout_hook: Option<Duration>,
     /// Set when a tick never returned: the reason, for the error every later request gets
@@ -1136,7 +1138,7 @@ pub struct CarlaBackend {
     miss_watch: npc_tracking::MissWatch,
     /// CARLA's Traffic Manager, created on the first `simulator_autopilot` spawn. LibCarla
     /// ticks it inside `world.tick()` when it is synchronous (verified on 0.9.16: a
-    /// registered vehicle drives with only world ticks), so swb stays the only ticker.
+    /// registered vehicle drives with only world ticks), so scensim stays the only ticker.
     traffic_manager: Option<carla::traffic_manager::TrafficManager>,
     /// The loaded town's map and lane graph, for routing simulator-driven vehicles. Built
     /// on first use, dropped when the world changes.
@@ -1150,7 +1152,7 @@ pub struct CarlaBackend {
     agent_link: Option<AgentLink>,
     /// The entities agents drive (controller `agent`), by SSv2 name = CARLA role_name.
     agent_vehicles: HashSet<String>,
-    /// Where their role names are recorded for a later swb's reaper (`agent_link`).
+    /// Where their role names are recorded for a later scensim's reaper (`agent_link`).
     agent_ledger: PathBuf,
     /// The weather the user asked for -- the `weather` parameter, then the last
     /// `/scenario_world_bridge/set_weather` -- with a label for logs. Re-applied after every map load and
@@ -2025,7 +2027,7 @@ impl CarlaBackend {
     /// them standing where the next scenario drives (roadmap 016).
     ///
     /// Agent-driven vehicles carry their entity name as role_name (the vehicle side finds
-    /// them by it), not the mark, so every swb records those names in a ledger on tmpfs
+    /// them by it), not the mark, so every scensim records those names in a ledger on tmpfs
     /// (`agent_link::ledger_path`) and the reaper reads it.
     ///
     /// Only the ego's role name, the ledger's names and marked entities are touched.
@@ -2204,7 +2206,7 @@ impl CarlaBackend {
     }
 
     /// A short-lived client and its world, for lookups by id that must not be answered from
-    /// swb's own actor cache (`actor_census`). Keep the client alive while using the world.
+    /// scensim's own actor cache (`actor_census`). Keep the client alive while using the world.
     fn probe_world(&self, timeout: Duration) -> Result<(Client, World)> {
         let mut client = Client::connect(&self.carla_host, self.carla_port, None)
             .map_err(|e| eyre::eyre!("connect a lookup client: {e}"))?;
@@ -2241,7 +2243,7 @@ impl CarlaBackend {
     }
 
     /// Record the agent-driven vehicles this process has in the world, for the reaper of
-    /// a later swb should this one die without tearing them down.
+    /// a later scensim should this one die without tearing them down.
     fn store_agent_ledger(&self) {
         if let Err(e) = agent_link::store_ledger(&self.agent_ledger, &self.agent_vehicles) {
             tracing::warn!("Could not record agent-driven vehicles: {e:#}");
@@ -2466,7 +2468,7 @@ impl CarlaBackend {
             self.forget_actor_samples(actor_id);
         }
         // Their names stay in the ledger while a destroy may have failed: the reaper of the
-        // next Initialize (or swb) finishes the job.
+        // next Initialize (or scensim) finishes the job.
         if had_agent_vehicles && report.failed == 0 {
             self.store_agent_ledger();
         }
@@ -2577,7 +2579,7 @@ impl CarlaBackend {
             // old one ends (acb exits on the world id it sees change; roadmap 051).
             let prepared = self.prepare_map(&town, &current_town);
             self.set_client_timeout(budgets::CLIENT_RPC_TIMEOUT);
-            // CARLA stays synchronous across the load (reset_settings = false), and swb stays
+            // CARLA stays synchronous across the load (reset_settings = false), and scensim stays
             // its only ticker. Re-apply the settings to the new world anyway: the step and
             // physics substeps are this bridge's, and a failed load left the old world.
             self.sync_mode_enabled = false;
@@ -2612,7 +2614,7 @@ impl CarlaBackend {
             self.stale_snapshots = 0;
             // `sync_mode_enabled` is left as `enable_sync_mode` above set it. It used to be
             // cleared here (a line from before the load re-applied synchronous mode), which
-            // left CARLA synchronous with swb believing it async: frames waited for an ego
+            // left CARLA synchronous with scensim believing it async: frames waited for an ego
             // without ticking, so after a map change a scenario with no ego never advanced
             // and its NPCs never reached a snapshot (roadmap 023, "a stale snapshot fails
             // the frame"), and spawns skipped their settling tick.
@@ -2676,7 +2678,7 @@ impl CarlaBackend {
 
         tracing::info!("Loading map '{town}' (CARLA currently holds '{current_town}')");
         // reset_settings = false: the new world stays synchronous, so it advances only when
-        // swb ticks it -- swb is the only ticker (docs/design/time-and-ticking.md) -- and
+        // scensim ticks it -- scensim is the only ticker (docs/design/time-and-ticking.md) -- and
         // the frame count after the load is exact. The default reverts it to async, where it
         // free-runs until someone reads it (and loads took 44 s to over 120 s).
         let client = self.client.clone();
@@ -2794,7 +2796,7 @@ impl CarlaBackend {
     /// A table that differs from the resolved one for the same Lanelet2 map is rewritten in
     /// the state directory, but fails Initialize in a map directory (the user's): acb would
     /// report the state of the wrong lights to Autoware. A table that cannot be written is a
-    /// warning when there was none (swb still applies the scenario's signals to CARLA, only
+    /// warning when there was none (scensim still applies the scenario's signals to CARLA, only
     /// acb has nothing to publish them from) and an error when the old one is wrong.
     fn check_resolved_signals(
         &self,
@@ -2823,7 +2825,7 @@ impl CarlaBackend {
         let state_dir = self.state_dir.as_deref();
         let dest = rs::table_dir(&map_dir, state_dir);
         let regenerate = format!(
-            "ros2 run swb_carla_world swb_carla_world --generate-signal-table {}{}",
+            "ros2 run scensim_carla_world scensim_carla_world --generate-signal-table {}{}",
             map_dir.display(),
             state_dir.map_or(String::new(), |d| format!(
                 " --ros-args -p state_dir:={}",
@@ -3429,7 +3431,7 @@ impl CarlaBackend {
             }
         }
 
-        // Synchronous from here on, with swb the only ticker: nothing advances the world
+        // Synchronous from here on, with scensim the only ticker: nothing advances the world
         // between scenarios or before the ego spawns, so idle time is a pause and a server
         // stall cannot reach /clock as a leap (docs/design/time-and-ticking.md). acb needs no
         // free-running world to find its vehicle; it follows on_tick, and the spawn's tick
@@ -3520,7 +3522,7 @@ impl CarlaBackend {
         }
 
         tracing::info!(
-            "Initialized (step_time={}). CARLA synchronous; swb is its only ticker.",
+            "Initialized (step_time={}). CARLA synchronous; scensim is its only ticker.",
             req.step_time
         );
         // CARLA is paused here: this is the frame SSv2's first UpdateFrame steps from.
@@ -3770,7 +3772,7 @@ impl CarlaBackend {
         let state = carla_state_for_log(&self.world);
         let reason = format!(
             "CARLA's {call} in {step} did not return (waited {waited}, bound {} s); {state}; \
-             last tick returned CARLA frame {:?}, Traffic Manager {}. swb ends this bridge so \
+             last tick returned CARLA frame {:?}, Traffic Manager {}. scensim ends this bridge so \
              its supervisor starts a fresh one",
             bound.as_secs(),
             self.last_tick_frame,
@@ -3985,7 +3987,7 @@ impl CarlaBackend {
         result
     }
 
-    /// The highest actor id swb knows of: CARLA hands ids out in increasing order and never
+    /// The highest actor id scensim knows of: CARLA hands ids out in increasing order and never
     /// reuses them, so an actor created after this has a higher one.
     fn id_watermark(&self) -> Option<u32> {
         let seen = self
@@ -6228,7 +6230,7 @@ impl CarlaBackend {
     }
 
     /// The smallest box-to-box clearance in the plane between `actor_id`'s body and every
-    /// other physics body swb spawned, from `snapshot` (roadmap 032 N2). `None` when its own
+    /// other physics body scensim spawned, from `snapshot` (roadmap 032 N2). `None` when its own
     /// box or pose is unknown, or no other body is in the snapshot.
     fn clearance_to_bodies(
         &self,
@@ -6963,9 +6965,9 @@ mod tests {
 
     #[test]
     fn entity_marks_are_recognised_and_configured_roles_are_not() {
-        assert_eq!(entity_role_name("npc_3"), "swb_entity:npc_3");
+        assert_eq!(entity_role_name("npc_3"), "scensim_entity:npc_3");
         assert!(is_entity_role_name(&entity_role_name("walker")));
-        for role in ["hero", "bg_av_1", "autopilot", "", "swb_entity"] {
+        for role in ["hero", "bg_av_1", "autopilot", "", "scensim_entity"] {
             assert!(!is_entity_role_name(role), "{role}");
         }
     }
@@ -7139,13 +7141,13 @@ mod tests {
     /// `acb_bridge` finds its vehicle by role_name. Only the ego should carry one -- an NPC
     /// tagged `hero` would be picked up by a bridge as if it were an Autoware vehicle.
     /// An agent-driven vehicle's role_name is its entity name, so it may not take the ego's
-    /// or look like one of swb's marks.
+    /// or look like one of scensim's marks.
     #[test]
     fn an_agent_vehicle_needs_a_role_name_of_its_own() {
         assert_eq!(agent_role_conflict("bg_av_1", "hero"), None);
         assert!(agent_role_conflict("hero", "hero").unwrap().contains("ego"));
         assert!(agent_role_conflict("", "hero").is_some());
-        assert!(agent_role_conflict("swb_entity:x", "hero").is_some());
+        assert!(agent_role_conflict("scensim_entity:x", "hero").is_some());
     }
 
     #[test]

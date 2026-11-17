@@ -26,12 +26,12 @@ use crate::coordinate_conversion::euler_to_quaternion;
 use crate::environment::{Precipitation, PrecipitationType, ScenarioWeather, Sun, TimeOfDay, Wind};
 use crate::map_props;
 use crate::proto::geometry_msgs::{self, Pose};
-use crate::proto::swb_world as wire;
+use crate::proto::scensim_world as wire;
 use crate::proto::traffic_simulator_msgs::entity_subtype::Enum as EntitySubtype;
 use crate::proto::traffic_simulator_msgs::{ActionStatus, BoundingBox};
 use crate::spectator::{self, Decision, Role, Spectator};
 use crate::weather::wire_form;
-use swb_core::world_server::{Refusal, World, WorldResult};
+use scensim_core::world_server::{Refusal, World, WorldResult};
 
 /// How often a CARLA that is not there yet is tried again.
 const CONNECT_EVERY: Duration = Duration::from_secs(5);
@@ -473,7 +473,7 @@ impl World for CarlaWorld {
             && req.role_name != backend.ego_role_name()
         {
             return Err(Refusal::new(format!(
-                "the ego's role name is '{}' on the bridge and '{}' here (swb_carla_world.yaml \
+                "the ego's role name is '{}' on the bridge and '{}' here (scensim_carla_world.yaml \
                  ego.role_name): acb attaches by it, so they must agree",
                 req.role_name,
                 backend.ego_role_name()

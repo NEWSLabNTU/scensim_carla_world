@@ -1,6 +1,6 @@
 # The CARLA world server's configuration (roadmap 046): CARLA behind the world protocol.
 #
-# swb_carla_world reads the file its ROS parameter `config_file` names (default this installed
+# scensim_carla_world reads the file its ROS parameter `config_file` names (default this installed
 # copy); per-map files (blueprint_boxes_<version>.yaml) sit beside it. Precedence: ROS
 # parameters (carla_host, carla_port, ssv2_port, port) > environment (CARLA_HOST, CARLA_PORT,
 # SSV2_PORT) > this file > built-in default. A missing file is fine; a malformed one is fatal,
@@ -24,7 +24,7 @@ ssv2:
 # The scenario ego.
 ego:
   # The name the simulator gives the ego vehicle (CARLA's role_name): its vehicle bridge
-  # finds it by this. The CARLA world server's swb_carla_world.yaml must say the same.
+  # finds it by this. The CARLA world server's scensim_carla_world.yaml must say the same.
   role_name: "hero"
 # SSv2 asset key -> CARLA blueprint.
 #
@@ -134,12 +134,12 @@ carla_tick_seconds: 0.05
 # CARLA's Traffic Manager drives every scenario entity whose controller is
 # `simulator_autopilot`. Its port follows CARLA's (CARLA_PORT + 6000, so 8000 for 2000)
 # unless set here to something else than 8000. The rest:
-# `simulator_autopilot` (docs/design/scenario-authoring.md). swb runs it in its own process
+# `simulator_autopilot` (docs/design/scenario-authoring.md). scensim runs it in its own process
 # and ticks it with the world, synchronously; `seed` is applied at every Initialize so the
 # simulator-driven traffic repeats run to run.
-# `serve: true` (or SWB_TM_SERVE=1) also serves it to other clients: it starts with the
-# synchronous world and stays for the bridge's lifetime, so a process that follows swb's
-# frames can drive vehicles through it as a TM-Client, stepped by swb's tick.
+# `serve: true` (or SCENSIM_TM_SERVE=1) also serves it to other clients: it starts with the
+# synchronous world and stays for the bridge's lifetime, so a process that follows scensim's
+# frames can drive vehicles through it as a TM-Client, stepped by scensim's tick.
 traffic_manager:
   port: 8000
   seed: 2017
