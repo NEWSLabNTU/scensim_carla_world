@@ -13,7 +13,7 @@ path = "src/main.rs"
 install_to_share = ["config", "launch"]
 
 [dependencies]
-scensim_core = { path = "../deps/swb_world_protocol/scensim_core" }
+scensim_core = { path = "../deps/scensim_world_protocol/scensim_core" }
 # sim_vehicle_spec's carla_physics.yaml as types (roadmap 051 K3)
 carla_physics_spec = { path = "../deps/sim_vehicle_spec/crates/carla_physics_spec" }
 # CARLA: the version is the workspace's feature (CLAUDE.md, "The CARLA version is a Cargo

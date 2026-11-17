@@ -136,7 +136,7 @@ mod tests {
     /// scenario brakes alike on both simulators.
     #[test]
     fn wet_factors_match_the_isaac_class_table() {
-        // Isaac's table is scensim_isaac_world's; scenario-world-bridge, which holds both world
+        // Isaac's table is scensim_isaac_world's; scensim, which holds both world
         // servers, points SCENSIM_ISAAC_SURFACE_CLASSES at it in its `just test`.
         let Some(path) = std::env::var_os("SCENSIM_ISAAC_SURFACE_CLASSES") else {
             eprintln!(

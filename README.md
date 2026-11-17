@@ -1,7 +1,7 @@
 # scensim_carla_world
 
 [CARLA](https://carla.org/) 0.9.16 behind the world protocol of
-[scenario-world-bridge](https://github.com/NEWSLabNTU/scenario-world-bridge): the CARLA
+[scensim](https://github.com/NEWSLabNTU/scensim): the CARLA
 **world server**. It loads the town, spawns and moves the scenario's vehicles and people
 (SSv2's NPCs teleported or tracked with physics, Traffic Manager autopilots, Autoware-driven
 `agent` vehicles), sets traffic lights, weather and road friction, ticks CARLA synchronously
@@ -11,7 +11,7 @@ One server per CARLA: it holds `/tmp/scensim-locks/carla-<host>-<port>.lock` for
 life, and exits 75 for its supervisor when CARLA goes away.
 
 ```bash
-git submodule update --init --recursive   # deps/swb_world_protocol
+git submodule update --init --recursive   # deps/scensim_world_protocol
 just build
 play_launch launch scensim_carla_world scensim_carla_world.launch.xml port:=5591 carla_port:=2000
 scensim_world_check conformance tcp://127.0.0.1:5591 --map <map dir>   # from scensim_world_protocol
@@ -21,7 +21,7 @@ scensim_world_check conformance tcp://127.0.0.1:5591 --map <map dir>   # from sc
 |---|---|
 | `scensim_carla_world/` | The ROS package (ament_cargo): the server, `launch/scensim_carla_world.launch.xml`, `config/scensim_carla_world.yaml`, the measured blueprint table `config/blueprint_boxes_0.9.16.yaml` |
 | `scripts/measure_blueprint_boxes.py` | Re-measures that table (boxes and axles) from a running CARLA |
-| `deps/swb_world_protocol` | The protocol and its Rust shell (`scensim_core`), a submodule |
+| `deps/scensim_world_protocol` | The protocol and its Rust shell (`scensim_core`), a submodule |
 | `deps/sim_vehicle_spec` | The vehicle specs; the ego's `carla_physics.yaml` comes from here, a submodule |
 
 The CARLA version is the `carla-0916` feature of the `carla` dependency (`Cargo.toml`); a

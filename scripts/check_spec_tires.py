@@ -17,7 +17,7 @@ of its own. Every spec'd car must read the file's friction; the stock cars their
 
 Start the world server against an idle CARLA first (no bridge owns it), with that
 `vehicle_physics`. Needs `carla` (0.9.16), `pyzmq`, `protobuf` and `pyyaml`; the protocol
-module comes from deps/swb_world_protocol. Exit 0 when every read was right.
+module comes from deps/scensim_world_protocol. Exit 0 when every read was right.
 """
 
 import argparse
@@ -33,7 +33,7 @@ import yaml
 import zmq
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / "deps/swb_world_protocol/scensim_world_server"))
+sys.path.insert(0, str(HERE.parent / "deps/scensim_world_protocol/scensim_world_server"))
 from scensim_world_server import protocol as pb  # noqa: E402
 from scensim_world_server.lifetime import start_time  # noqa: E402
 
