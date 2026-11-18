@@ -9,9 +9,10 @@
 //! (`coordinate_conversion::carla_to_ros_rotation` + `euler_to_quaternion`, and back), so
 //! what has to hold is that our conversion is FRotator's, Y-flipped into ROS. The tests
 //! below check exactly that from known poses, against FRotator's matrix written out here
-//! (Unreal's `FRotationMatrix::MakeFromRotator`, independent of carla-rust), and on a
-//! `carla-10` build also against carla-rust's `Rotation::rotate_vector`. Result: no
-//! compensation for the old order exists in this code, and none is needed.
+//! (Unreal's `FRotationMatrix::MakeFromRotator`, independent of carla-rust), and against the
+//! linked LibCarla's `Rotation::rotate_vector`, on 0.9.16 and 1.0 builds alike. Result
+//! (2026-11-18, carla-rust 1212b60): all three agree on both versions, from every pose
+//! below; no compensation for the old order exists in this code, and none is needed.
 
 #[cfg(test)]
 mod tests {
@@ -131,11 +132,12 @@ mod tests {
         }
     }
 
-    /// On 1.0, LibCarla's own math is FRotator too (the corrected order), so it agrees with
-    /// ours. Not asserted on 0.9.16, whose RotateVector is the one 1.0 corrected.
-    #[cfg(feature = "carla-10")]
+    /// LibCarla's own rotation (`Rotation::rotate_vector`, the client the binary links) is
+    /// FRotator too, on 0.9.16 and on 1.0 alike, so it agrees with ours from every pose.
+    /// carla-rust's `Rotation::to_na()` is not used here or in the conversion: it disagrees
+    /// with LibCarla (an old carla-rust issue, not a 1.0 one).
     #[test]
-    fn libcarla_1_0_rotate_vector_agrees() {
+    fn libcarla_rotate_vector_agrees() {
         use carla::geom::{Rotation, Vector3D};
         for (pitch, yaw, roll) in POSES {
             let r = Rotation {

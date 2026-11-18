@@ -358,7 +358,7 @@ impl World for CarlaWorld {
 
     fn capabilities(&self) -> Vec<wire::Capability> {
         use wire::Capability as C;
-        vec![
+        let mut caps = vec![
             C::Signals,
             C::Autopilot,
             C::AgentVehicles,
@@ -368,7 +368,13 @@ impl World for CarlaWorld {
             C::Contacts,
             C::RoadCondition,
             C::Environment,
-        ]
+        ];
+        // A road's friction scales the wheels' PhysX tire friction; CARLA 1.0's Chaos wheels
+        // have none, until roadmap 083 step 5 maps it.
+        if cfg!(feature = "carla-10") {
+            caps.retain(|c| *c != C::RoadCondition);
+        }
+        caps
     }
 
     fn ready(&mut self) -> Result<(), String> {

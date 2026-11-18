@@ -24,11 +24,19 @@
 //! decoy whose apply is read back before it is destroyed: 8 runs of 8 kept the car's tires
 //! through a spawn, its speed continuous.
 
-use carla::client::{ActorBase, Vehicle, World};
+#[cfg(not(feature = "carla-10"))]
+use carla::client::ActorBase;
+use carla::client::{Vehicle, World};
+#[cfg(not(feature = "carla-10"))]
 use carla::geom::{Location, Rotation, Transform, Vector2D, Vector3D};
-use carla::rpc::{GearPhysicsControl, VehiclePhysicsControl};
-use carla_physics_spec::{CarlaPhysics, ReadBack};
+#[cfg(not(feature = "carla-10"))]
+use carla::rpc::GearPhysicsControl;
+use carla::rpc::VehiclePhysicsControl;
+use carla_physics_spec::CarlaPhysics;
+#[cfg(not(feature = "carla-10"))]
+use carla_physics_spec::ReadBack;
 
+#[cfg(not(feature = "carla-10"))]
 /// `control` with the file's physics: what it says, the rest of the blueprint's kept.
 pub fn set(control: &mut VehiclePhysicsControl, p: &CarlaPhysics) {
     let v = &p.vehicle;
@@ -78,6 +86,7 @@ pub fn set(control: &mut VehiclePhysicsControl, p: &CarlaPhysics) {
     }
 }
 
+#[cfg(not(feature = "carla-10"))]
 /// What an actor's physics control says, in the file's units.
 pub fn read_back(control: &VehiclePhysicsControl) -> ReadBack {
     ReadBack {
@@ -115,6 +124,7 @@ pub fn read_back(control: &VehiclePhysicsControl) -> ReadBack {
     }
 }
 
+#[cfg(not(feature = "carla-10"))]
 /// Put the file's physics on `vehicle` ([`apply_kept`]). CARLA applies it at the next tick:
 /// [`check`] after. The decoy's id, if one spawned.
 pub fn apply(world: &mut World, vehicle: &Vehicle, p: &CarlaPhysics) -> eyre::Result<Option<u32>> {
@@ -132,6 +142,7 @@ pub fn apply(world: &mut World, vehicle: &Vehicle, p: &CarlaPhysics) -> eyre::Re
     apply_kept(world, vehicle, &control)
 }
 
+#[cfg(not(feature = "carla-10"))]
 /// Where a decoy spawns: under every town, in no sensor's view; it never sees a tick.
 const DECOY_AT: Location = Location {
     x: 0.0,
@@ -139,10 +150,12 @@ const DECOY_AT: Location = Location {
     z: -500.0,
 };
 
+#[cfg(not(feature = "carla-10"))]
 /// A decoy's role: an entity mark, so a world server that died between its spawn and its
 /// destroy leaves an orphan the next one reaps.
 pub const DECOY_ROLE: &str = "scensim_entity:~tire_decoy";
 
+#[cfg(not(feature = "carla-10"))]
 /// A car's motion, read before an apply rebuilds its PhysX vehicle at rest.
 #[derive(Debug, Clone, Copy)]
 pub struct Motion {
@@ -150,6 +163,7 @@ pub struct Motion {
     pub angular_velocity: Vector3D,
 }
 
+#[cfg(not(feature = "carla-10"))]
 impl Motion {
     pub fn of(vehicle: &Vehicle) -> eyre::Result<Self> {
         Ok(Self {
@@ -178,11 +192,13 @@ impl Motion {
     }
 }
 
+#[cfg(not(feature = "carla-10"))]
 /// The tires of the decoy's own control are marked this much lower, so its apply can be
 /// seen to have happened. No live car ever runs the mark: a spawn sets the tire config it
 /// takes to the blueprint's friction.
 const DECOY_MARK: f32 = 0.01;
 
+#[cfg(not(feature = "carla-10"))]
 /// Read `vehicle` back until it reports these tires (LibCarla sends an apply without
 /// waiting for it, and a destroy sent next overtook it: a decoy destroyed before its apply
 /// left the car on the blueprint's tire config, 1 run in 3). Whether it did, within 0.2 s.
@@ -198,6 +214,7 @@ fn wait_for_tires(vehicle: &Vehicle, want: &[f32]) -> bool {
     false
 }
 
+#[cfg(not(feature = "carla-10"))]
 fn tires_are(control: &VehiclePhysicsControl, want: &[f32]) -> bool {
     control.wheels.len() == want.len()
         && control
@@ -207,6 +224,7 @@ fn tires_are(control: &VehiclePhysicsControl, want: &[f32]) -> bool {
             .all(|(w, f)| (w.tire_friction - f).abs() < 1e-3)
 }
 
+#[cfg(not(feature = "carla-10"))]
 /// `control` on `vehicle`, which keeps its motion and keeps it alone: a decoy of its
 /// blueprint spawns first (a spawn of the blueprint resets the tire config the blueprint
 /// shares, so it must come before), `control` goes on the car, the decoy's own control
@@ -284,6 +302,7 @@ pub fn apply_kept(
     Ok(decoy_id)
 }
 
+#[cfg(not(feature = "carla-10"))]
 /// `control` with the file's physics and the road's factor on its tires: what a spec'd car
 /// should run on a road whose friction the scenario scaled.
 pub fn set_on_road(control: &mut VehiclePhysicsControl, p: &CarlaPhysics, road_factor: f64) {
@@ -302,6 +321,7 @@ pub fn road_tires(current: &[f32], own: &[f32], factor: f64) -> Option<Vec<f32>>
     (!same).then_some(want)
 }
 
+#[cfg(not(feature = "carla-10"))]
 /// What `vehicle` runs that is not the file's on this road (empty: all of it is). Read
 /// back now: CARLA reports a re-applied or a reset control at once, without a tick.
 pub fn off_road(
@@ -315,6 +335,7 @@ pub fn off_road(
     Ok(p.differences(&read_back(&back), road_factor))
 }
 
+#[cfg(not(feature = "carla-10"))]
 /// Put the file's physics, on this road, back on `vehicle` ([`apply_kept`]: its motion
 /// kept). The decoy's id, if one spawned.
 pub fn reapply(
@@ -354,6 +375,7 @@ impl SpawnWatch {
     }
 }
 
+#[cfg(not(feature = "carla-10"))]
 /// After a tick: the physics `vehicle` runs is the file's. An error names what is not.
 pub fn check(vehicle: &Vehicle, p: &CarlaPhysics) -> eyre::Result<()> {
     let back = vehicle
@@ -364,6 +386,86 @@ pub fn check(vehicle: &Vehicle, p: &CarlaPhysics) -> eyre::Result<()> {
         eyre::bail!("the physics did not take: {}", off.join("; "));
     }
     Ok(())
+}
+
+/// The wheels' tire friction, in wheel order: what a road's factor scales.
+#[cfg(not(feature = "carla-10"))]
+pub fn tire_frictions(control: &VehiclePhysicsControl) -> eyre::Result<Vec<f32>> {
+    Ok(control.wheels.iter().map(|w| w.tire_friction).collect())
+}
+
+/// Set the wheels' tire friction, in wheel order.
+#[cfg(not(feature = "carla-10"))]
+pub fn set_tire_frictions(
+    control: &mut VehiclePhysicsControl,
+    frictions: &[f32],
+) -> eyre::Result<()> {
+    for (wheel, f) in control.wheels.iter_mut().zip(frictions) {
+        wheel.tire_friction = *f;
+    }
+    Ok(())
+}
+
+// CARLA 1.0 runs Chaos, not PhysX: its VehiclePhysicsControl has none of the file's PhysX
+// fields (tire friction, stiffness, gears, damping rates, MOI), and the 0.9.16 tyre-sharing
+// workaround (the decoy) is PhysX's. Mapping the spec onto Chaos is roadmap 083 step 5; until
+// then a 1.0 build refuses the spec's physics by name rather than run a car on its
+// blueprint's physics while claiming the spec's.
+#[cfg(feature = "carla-10")]
+fn not_on_chaos() -> eyre::Report {
+    eyre::eyre!(
+        "the vehicle spec's physics is not mapped onto CARLA {}'s Chaos vehicles yet (roadmap \
+         083 step 5); run with vehicle_physics:=none for the blueprint's own physics",
+        super::version::BUILT_FOR
+    )
+}
+
+#[cfg(feature = "carla-10")]
+pub fn apply(_: &mut World, _: &Vehicle, _: &CarlaPhysics) -> eyre::Result<Option<u32>> {
+    Err(not_on_chaos())
+}
+
+#[cfg(feature = "carla-10")]
+pub fn apply_kept(
+    _: &mut World,
+    _: &Vehicle,
+    _: &VehiclePhysicsControl,
+) -> eyre::Result<Option<u32>> {
+    Err(not_on_chaos())
+}
+
+#[cfg(feature = "carla-10")]
+pub fn off_road(_: &Vehicle, _: &CarlaPhysics, _: f64) -> eyre::Result<Vec<String>> {
+    Err(not_on_chaos())
+}
+
+#[cfg(feature = "carla-10")]
+pub fn reapply(_: &mut World, _: &Vehicle, _: &CarlaPhysics, _: f64) -> eyre::Result<Option<u32>> {
+    Err(not_on_chaos())
+}
+
+#[cfg(feature = "carla-10")]
+pub fn check(_: &Vehicle, _: &CarlaPhysics) -> eyre::Result<()> {
+    Err(not_on_chaos())
+}
+
+/// A road's friction on a 1.0 car: Chaos has no per-wheel tire friction to scale (step 5).
+#[cfg(feature = "carla-10")]
+pub fn tire_frictions(_: &VehiclePhysicsControl) -> eyre::Result<Vec<f32>> {
+    Err(no_chaos_friction())
+}
+
+#[cfg(feature = "carla-10")]
+fn no_chaos_friction() -> eyre::Report {
+    eyre::eyre!(
+        "a road's friction is not mapped onto CARLA {}'s Chaos wheels yet (roadmap 083 step 5)",
+        super::version::BUILT_FOR
+    )
+}
+
+#[cfg(feature = "carla-10")]
+pub fn set_tire_frictions(_: &mut VehiclePhysicsControl, _: &[f32]) -> eyre::Result<()> {
+    Err(no_chaos_friction())
 }
 
 #[cfg(test)]
@@ -388,6 +490,7 @@ mod tests {
         assert!(w.saw(42), "someone else's");
     }
 
+    #[cfg(not(feature = "carla-10"))]
     #[test]
     fn a_car_at_rest_has_no_motion_to_set_back() {
         let still = Motion {

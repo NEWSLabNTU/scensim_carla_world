@@ -1895,21 +1895,24 @@ impl CarlaBackend {
         let carla::client::ActorKind::Vehicle(vehicle) = actor.into_kinds() else {
             return Ok(());
         };
+        // CARLA 1.0 (Chaos) has no tire friction to scale: a dry road is every car's own, and
+        // any other road is refused by name below (roadmap 083 step 5).
+        if cfg!(feature = "carla-10") && self.road.friction_factor == 1.0 {
+            return Ok(());
+        }
         let mut control = vehicle.physics_control().wrap_err("read its physics")?;
+        let current = super::vehicle_physics::tire_frictions(&control)?;
         let own = self
             .own_friction
             .entry(id)
-            .or_insert_with(|| control.wheels.iter().map(|w| w.tire_friction).collect());
+            .or_insert_with(|| current.clone());
         // An apply rebuilds the car's PhysX vehicle: only when its tires are not the road's.
-        let current: Vec<f32> = control.wheels.iter().map(|w| w.tire_friction).collect();
         let Some(want) =
             super::vehicle_physics::road_tires(&current, own, self.road.friction_factor)
         else {
             return Ok(());
         };
-        for (wheel, want) in control.wheels.iter_mut().zip(want) {
-            wheel.tire_friction = want;
-        }
+        super::vehicle_physics::set_tire_frictions(&mut control, &want)?;
         super::vehicle_physics::apply_kept(&mut self.world, &vehicle, &control)
             .wrap_err("apply its physics")?;
         Ok(())

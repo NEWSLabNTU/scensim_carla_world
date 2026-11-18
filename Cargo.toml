@@ -23,8 +23,8 @@ exclude = ["deps"]
 # Roadmap 083: the CARLA version is now the package's feature (scensim_carla_world/Cargo.toml),
 # so one workspace builds a 0.9.16 binary (the default) or a 1.0 one
 # (`--no-default-features --features carla-10`). carla-10 is not on crates.io yet: carla-rust
-# master 3294525 (carla-10, 0.15.1 + 1.0 support) until its release, then the version here.
-carla = { git = "https://github.com/jerry73204/carla-rust", rev = "3294525" }
+# master 1212b60 (carla-10 with its 1.0 prebuilt) until its release, then the version here.
+carla = { git = "https://github.com/jerry73204/carla-rust", rev = "1212b60" }
 
 [profile.dev-release]
 inherits = "release"
