@@ -24,17 +24,17 @@
 //! decoy whose apply is read back before it is destroyed: 8 runs of 8 kept the car's tires
 //! through a spawn, its speed continuous.
 
+use carla::client::{ActorBase, Vehicle, World};
+use carla::geom::Vector3D;
 #[cfg(not(feature = "carla-10"))]
-use carla::client::ActorBase;
-use carla::client::{Vehicle, World};
-#[cfg(not(feature = "carla-10"))]
-use carla::geom::{Location, Rotation, Transform, Vector2D, Vector3D};
+use carla::geom::{Location, Rotation, Transform, Vector2D};
 #[cfg(not(feature = "carla-10"))]
 use carla::rpc::GearPhysicsControl;
 use carla::rpc::VehiclePhysicsControl;
-use carla_physics_spec::CarlaPhysics;
+#[cfg(feature = "carla-10")]
+use carla_physics_spec::chaos::{ChaosPhysics, ReadBack as ChaosReadBack};
 #[cfg(not(feature = "carla-10"))]
-use carla_physics_spec::ReadBack;
+use carla_physics_spec::{CarlaPhysics, ReadBack};
 
 #[cfg(not(feature = "carla-10"))]
 /// `control` with the file's physics: what it says, the rest of the blueprint's kept.
@@ -155,15 +155,14 @@ const DECOY_AT: Location = Location {
 /// destroy leaves an orphan the next one reaps.
 pub const DECOY_ROLE: &str = "scensim_entity:~tire_decoy";
 
-#[cfg(not(feature = "carla-10"))]
-/// A car's motion, read before an apply rebuilds its PhysX vehicle at rest.
+/// A car's motion, read before an apply rebuilds its vehicle at rest (PhysX on 0.9.16, Chaos
+/// on 1.0: an apply on a moving 1.0 car zeroes its velocity too, 243's measurement).
 #[derive(Debug, Clone, Copy)]
 pub struct Motion {
     pub velocity: Vector3D,
     pub angular_velocity: Vector3D,
 }
 
-#[cfg(not(feature = "carla-10"))]
 impl Motion {
     pub fn of(vehicle: &Vehicle) -> eyre::Result<Self> {
         Ok(Self {
@@ -406,66 +405,237 @@ pub fn set_tire_frictions(
     Ok(())
 }
 
-// CARLA 1.0 runs Chaos, not PhysX: its VehiclePhysicsControl has none of the file's PhysX
-// fields (tire friction, stiffness, gears, damping rates, MOI), and the 0.9.16 tyre-sharing
-// workaround (the decoy) is PhysX's. Mapping the spec onto Chaos is roadmap 083 step 5; until
-// then a 1.0 build refuses the spec's physics by name rather than run a car on its
-// blueprint's physics while claiming the spec's.
+// CARLA 1.0 runs Chaos, not PhysX (roadmap 083 step 5): sim_vehicle_spec's
+// `carla_physics_1.0.yaml` (carla_physics_spec::chaos) onto 1.0's VehiclePhysicsControl. Only
+// what 1.0 applies from a client is set and compared (243's measurements, 2026-11-18); what
+// it keeps from the blueprint's asset is the file's `not_applied`, logged once at load. No
+// tyre sharing on 1.0, so no decoy; an apply still stops a moving car, so its motion is
+// set back after it.
+
+/// The physics file this binary applies: `carla_physics_1.0.yaml` on CARLA 1.0.
 #[cfg(feature = "carla-10")]
-fn not_on_chaos() -> eyre::Report {
-    eyre::eyre!(
-        "the vehicle spec's physics is not mapped onto CARLA {}'s Chaos vehicles yet (roadmap \
-         083 step 5); run with vehicle_physics:=none for the blueprint's own physics",
-        super::version::BUILT_FOR
-    )
+pub type Physics = ChaosPhysics;
+
+/// The file for this build's CARLA, from the one the launch names: on 1.0 the launch's
+/// `carla_physics.yaml` (0.9.16's, the default path) means its sibling
+/// `carla_physics_1.0.yaml`; a 1.0 file named directly is taken as is.
+#[cfg(feature = "carla-10")]
+pub fn physics_path(named: &std::path::Path) -> std::path::PathBuf {
+    if named.file_name().and_then(|n| n.to_str()) == Some("carla_physics.yaml") {
+        named.with_file_name("carla_physics_1.0.yaml")
+    } else {
+        named.to_path_buf()
+    }
 }
 
+/// Load the physics for this build's CARLA ([`physics_path`]), logging once what CARLA 1.0
+/// keeps from the blueprint.
 #[cfg(feature = "carla-10")]
-pub fn apply(_: &mut World, _: &Vehicle, _: &CarlaPhysics) -> eyre::Result<Option<u32>> {
-    Err(not_on_chaos())
+pub fn load(named: &std::path::Path) -> eyre::Result<Physics> {
+    let path = physics_path(named);
+    let p = ChaosPhysics::load(&path).map_err(|e| eyre::eyre!(e))?;
+    if !p.not_applied.is_empty() {
+        tracing::info!(
+            "Vehicle physics {}: CARLA {} keeps these from the {} asset, not the spec's: {}",
+            path.display(),
+            super::version::BUILT_FOR,
+            p.blueprint,
+            p.not_applied.join("; ")
+        );
+    }
+    Ok(p)
 }
 
+/// `control` with the file's physics, the road's `road_factor` on the tires' friction
+/// multiplier: what 1.0 applies from a client, in its units (wheel radius in centimetres,
+/// steer angle in degrees, the torque curve normalised to `max_torque`); everything else the
+/// blueprint's.
+#[cfg(feature = "carla-10")]
+pub fn set_on_road(control: &mut VehiclePhysicsControl, p: &ChaosPhysics, road_factor: f64) {
+    use carla::geom::{Location, Vector2D};
+    let v = &p.vehicle;
+    control.mass = v.mass as f32;
+    control.center_of_mass = Location {
+        x: v.center_of_mass[0] as f32,
+        y: v.center_of_mass[1] as f32,
+        z: v.center_of_mass[2] as f32,
+    };
+    control.drag_coefficient = v.drag_coefficient as f32;
+    control.downforce_coefficient = v.downforce_coefficient as f32;
+    control.max_torque = v.max_torque as f32;
+    let curve = |pts: &[[f64; 2]]| -> Vec<Vector2D> {
+        pts.iter()
+            .map(|[x, y]| Vector2D {
+                x: *x as f32,
+                y: *y as f32,
+            })
+            .collect()
+    };
+    control.torque_curve = curve(&v.torque_curve);
+    control.max_rpm = v.max_rpm as f32;
+    control.idle_rpm = v.idle_rpm as f32;
+    control.brake_effect = v.brake_effect as f32;
+    // load() checked it
+    control.differential_type = v.differential_type().unwrap_or(control.differential_type);
+    control.use_automatic_gears = true;
+    control.final_ratio = v.final_ratio as f32;
+    control.forward_gear_ratios = v.forward_gear_ratios.iter().map(|r| *r as f32).collect();
+    control.reverse_gear_ratios = v.reverse_gear_ratios.iter().map(|r| *r as f32).collect();
+    control.change_up_rpm = v.change_up_rpm as f32;
+    control.change_down_rpm = v.change_down_rpm as f32;
+    control.transmission_efficiency = v.transmission_efficiency as f32;
+    control.steering_curve = curve(&v.steering_curve);
+    for (wheel, w) in control.wheels.iter_mut().zip(&p.wheels) {
+        wheel.wheel_radius = (w.radius_m * 100.0) as f32; // CARLA: cm
+        wheel.friction_force_multiplier = (w.friction_force_multiplier * road_factor) as f32;
+        wheel.max_steer_angle = w.max_steer_angle_deg as f32;
+        wheel.max_brake_torque = w.max_brake_torque as f32;
+        wheel.max_hand_brake_torque = w.max_handbrake_torque as f32;
+        wheel.abs_enabled = false;
+        wheel.traction_control_enabled = false;
+    }
+}
+
+/// What a 1.0 actor's physics control says, in the file's units: what 1.0 applies.
+#[cfg(feature = "carla-10")]
+pub fn read_back(control: &VehiclePhysicsControl) -> ChaosReadBack {
+    ChaosReadBack {
+        mass: f64::from(control.mass),
+        center_of_mass: [
+            f64::from(control.center_of_mass.x),
+            f64::from(control.center_of_mass.y),
+            f64::from(control.center_of_mass.z),
+        ],
+        drag_coefficient: f64::from(control.drag_coefficient),
+        max_torque: f64::from(control.max_torque),
+        max_rpm: f64::from(control.max_rpm),
+        final_ratio: f64::from(control.final_ratio),
+        transmission_efficiency: f64::from(control.transmission_efficiency),
+        differential_type: control.differential_type,
+        wheels: control
+            .wheels
+            .iter()
+            .map(|w| {
+                [
+                    f64::from(w.wheel_radius) / 100.0,
+                    f64::from(w.friction_force_multiplier),
+                    f64::from(w.max_steer_angle),
+                    f64::from(w.max_brake_torque),
+                    f64::from(w.max_hand_brake_torque),
+                ]
+            })
+            .collect(),
+    }
+}
+
+/// Put the file's physics on `vehicle` ([`apply_kept`]). CARLA applies it at the next tick:
+/// [`check`] after. No decoy on 1.0: always `None`.
+#[cfg(feature = "carla-10")]
+pub fn apply(world: &mut World, vehicle: &Vehicle, p: &ChaosPhysics) -> eyre::Result<Option<u32>> {
+    reapply(world, vehicle, p, 1.0)
+}
+
+/// Apply `control` to `vehicle` and set its motion back (a 1.0 apply stops a moving car).
+/// No decoy: 1.0 shares no tire state between cars of one blueprint (243, 2026-11-18).
 #[cfg(feature = "carla-10")]
 pub fn apply_kept(
-    _: &mut World,
-    _: &Vehicle,
-    _: &VehiclePhysicsControl,
+    _world: &mut World,
+    vehicle: &Vehicle,
+    control: &VehiclePhysicsControl,
 ) -> eyre::Result<Option<u32>> {
-    Err(not_on_chaos())
+    let motion = Motion::of(vehicle)
+        .map_err(|e| tracing::debug!("actor {}: {e:#}", vehicle.id()))
+        .ok();
+    vehicle
+        .apply_physics_control(control)
+        .map_err(|e| eyre::eyre!("apply the physics: {e}"))?;
+    if let Some(m) = motion.filter(Motion::moving) {
+        m.restore(vehicle)?;
+    }
+    Ok(None)
+}
+
+/// What `vehicle` runs that is not the file's on this road (empty: all of it is).
+#[cfg(feature = "carla-10")]
+pub fn off_road(
+    vehicle: &Vehicle,
+    p: &ChaosPhysics,
+    road_factor: f64,
+) -> eyre::Result<Vec<String>> {
+    let back = vehicle
+        .physics_control()
+        .map_err(|e| eyre::eyre!("read its physics: {e}"))?;
+    Ok(p.differences(&read_back(&back), road_factor))
+}
+
+/// Put the file's physics, on this road, on `vehicle` ([`apply_kept`]).
+#[cfg(feature = "carla-10")]
+pub fn reapply(
+    world: &mut World,
+    vehicle: &Vehicle,
+    p: &ChaosPhysics,
+    road_factor: f64,
+) -> eyre::Result<Option<u32>> {
+    let mut control = vehicle
+        .physics_control()
+        .map_err(|e| eyre::eyre!("read its physics: {e}"))?;
+    if control.wheels.len() != p.wheels.len() {
+        eyre::bail!(
+            "it has {} wheels, the physics {}",
+            control.wheels.len(),
+            p.wheels.len()
+        );
+    }
+    set_on_road(&mut control, p, road_factor);
+    apply_kept(world, vehicle, &control)
+}
+
+/// After a tick: the physics `vehicle` runs is the file's. An error names what is not.
+#[cfg(feature = "carla-10")]
+pub fn check(vehicle: &Vehicle, p: &ChaosPhysics) -> eyre::Result<()> {
+    let off = off_road(vehicle, p, 1.0)?;
+    if !off.is_empty() {
+        eyre::bail!("the physics did not take: {}", off.join("; "));
+    }
+    Ok(())
+}
+
+/// The wheels' friction, in wheel order: on 1.0 the friction force multiplier, which a
+/// road's factor scales (243: braking mu = 0.50 x multiplier + 0.035).
+#[cfg(feature = "carla-10")]
+pub fn tire_frictions(control: &VehiclePhysicsControl) -> eyre::Result<Vec<f32>> {
+    Ok(control
+        .wheels
+        .iter()
+        .map(|w| w.friction_force_multiplier)
+        .collect())
 }
 
 #[cfg(feature = "carla-10")]
-pub fn off_road(_: &Vehicle, _: &CarlaPhysics, _: f64) -> eyre::Result<Vec<String>> {
-    Err(not_on_chaos())
+pub fn set_tire_frictions(
+    control: &mut VehiclePhysicsControl,
+    frictions: &[f32],
+) -> eyre::Result<()> {
+    for (wheel, f) in control.wheels.iter_mut().zip(frictions) {
+        wheel.friction_force_multiplier = *f;
+    }
+    Ok(())
 }
 
-#[cfg(feature = "carla-10")]
-pub fn reapply(_: &mut World, _: &Vehicle, _: &CarlaPhysics, _: f64) -> eyre::Result<Option<u32>> {
-    Err(not_on_chaos())
+/// The physics file this binary applies: `carla_physics.yaml` on CARLA 0.9.16.
+#[cfg(not(feature = "carla-10"))]
+pub type Physics = CarlaPhysics;
+
+/// The file for this build's CARLA: on 0.9.16 the one the launch names.
+#[cfg(not(feature = "carla-10"))]
+pub fn physics_path(named: &std::path::Path) -> std::path::PathBuf {
+    named.to_path_buf()
 }
 
-#[cfg(feature = "carla-10")]
-pub fn check(_: &Vehicle, _: &CarlaPhysics) -> eyre::Result<()> {
-    Err(not_on_chaos())
-}
-
-/// A road's friction on a 1.0 car: Chaos has no per-wheel tire friction to scale (step 5).
-#[cfg(feature = "carla-10")]
-pub fn tire_frictions(_: &VehiclePhysicsControl) -> eyre::Result<Vec<f32>> {
-    Err(no_chaos_friction())
-}
-
-#[cfg(feature = "carla-10")]
-fn no_chaos_friction() -> eyre::Report {
-    eyre::eyre!(
-        "a road's friction is not mapped onto CARLA {}'s Chaos wheels yet (roadmap 083 step 5)",
-        super::version::BUILT_FOR
-    )
-}
-
-#[cfg(feature = "carla-10")]
-pub fn set_tire_frictions(_: &mut VehiclePhysicsControl, _: &[f32]) -> eyre::Result<()> {
-    Err(no_chaos_friction())
+/// Load the physics for this build's CARLA.
+#[cfg(not(feature = "carla-10"))]
+pub fn load(named: &std::path::Path) -> eyre::Result<Physics> {
+    CarlaPhysics::load(physics_path(named)).map_err(|e| eyre::eyre!(e))
 }
 
 #[cfg(test)]
@@ -490,7 +660,6 @@ mod tests {
         assert!(w.saw(42), "someone else's");
     }
 
-    #[cfg(not(feature = "carla-10"))]
     #[test]
     fn a_car_at_rest_has_no_motion_to_set_back() {
         let still = Motion {
@@ -533,5 +702,40 @@ mod tests {
         w.saw(500);
         assert!(w.saw(30), "ids start again on a restarted CARLA");
         assert!(!w.saw(30));
+    }
+
+    /// The model3's file for this build's CARLA, from the path the launch names (0.9.16's).
+    fn model3_named() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../deps/sim_vehicle_spec/generated/tesla_model3/carla_physics.yaml")
+    }
+
+    #[test]
+    fn the_launch_path_picks_the_file_for_this_carla() {
+        let named = model3_named();
+        let picked = physics_path(&named);
+        if cfg!(feature = "carla-10") {
+            assert_eq!(picked.file_name().unwrap(), "carla_physics_1.0.yaml");
+            // a 1.0 file named directly is taken as is
+            assert_eq!(physics_path(&picked), picked);
+        } else {
+            assert_eq!(picked, named);
+        }
+        let p = load(&named).unwrap();
+        assert_eq!(p.blueprint, "vehicle.tesla.model3");
+    }
+
+    #[cfg(feature = "carla-10")]
+    #[test]
+    fn the_1_0_file_is_its_own_read_back() {
+        let p = load(&model3_named()).unwrap();
+        assert!(p.differences(&p.as_read_back(), 1.0).is_empty());
+        // a wet road scales only the friction multiplier, and is still this car
+        let mut wet = p.as_read_back();
+        for w in wet.wheels.iter_mut() {
+            w[1] *= 0.5;
+        }
+        assert!(p.differences(&wet, 0.5).is_empty());
+        assert!(!p.differences(&wet, 1.0).is_empty());
     }
 }

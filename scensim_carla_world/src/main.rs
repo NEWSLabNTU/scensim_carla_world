@@ -162,16 +162,18 @@ fn main() -> Result<()> {
         config_file.display()
     );
 
-    // sim_vehicle_spec's carla_physics.yaml (roadmap 051 K3); empty: the blueprints' own.
+    // sim_vehicle_spec's carla_physics.yaml (roadmap 051 K3; per CARLA version, roadmap 083);
+    // empty: the blueprints' own.
     let vehicle_physics = match params
         .path("vehicle_physics")
         .filter(|p| p.as_os_str() != "none")
     {
         Some(path) => {
-            let p = carla_physics_spec::CarlaPhysics::load(&path).map_err(|e| eyre::eyre!(e))?;
+            // the file for this build's CARLA (on 1.0 carla_physics_1.0.yaml; roadmap 083)
+            let p = backend::carla::vehicle_physics::load(&path)?;
             tracing::info!(
                 "Vehicle physics {} ({}, spec_hash {})",
-                path.display(),
+                backend::carla::vehicle_physics::physics_path(&path).display(),
                 p.blueprint,
                 &p.spec_hash[..p.spec_hash.len().min(12)]
             );

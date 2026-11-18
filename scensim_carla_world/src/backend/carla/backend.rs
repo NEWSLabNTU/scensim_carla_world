@@ -1168,7 +1168,7 @@ pub struct CarlaBackend {
     own_friction: HashMap<u32, Vec<f32>>,
     /// sim_vehicle_spec's carla_physics.yaml (roadmap 051 K3): put on every vehicle a vehicle
     /// stack drives whose body is its blueprint. `None`: the blueprint's own physics.
-    vehicle_physics: Option<carla_physics_spec::CarlaPhysics>,
+    vehicle_physics: Option<super::vehicle_physics::Physics>,
     /// The cars that run `vehicle_physics`, by actor id (their entity names): kept on it,
     /// since CARLA 0.9.16 puts the blueprint's tire friction back on them when another car
     /// of the blueprint spawns ([`CarlaBackend::keep_spec_physics`]).
@@ -1757,7 +1757,7 @@ impl CarlaBackend {
     /// The physics a vehicle stack's car runs: `carla_physics.yaml` (`vehicle_physics`), set
     /// once and read back, on a vehicle whose blueprint is the file's. Another body keeps its
     /// blueprint's (and says so): its vehicle bridge refuses it.
-    pub fn set_vehicle_physics(&mut self, physics: Option<carla_physics_spec::CarlaPhysics>) {
+    pub fn set_vehicle_physics(&mut self, physics: Option<super::vehicle_physics::Physics>) {
         self.vehicle_physics = physics;
     }
 
@@ -1768,7 +1768,7 @@ impl CarlaBackend {
         name: &str,
         actor: &carla::client::Actor,
         blueprint: &str,
-    ) -> Result<Option<carla_physics_spec::CarlaPhysics>> {
+    ) -> Result<Option<super::vehicle_physics::Physics>> {
         let Some(physics) = self.vehicle_physics.clone() else {
             return Ok(None);
         };
@@ -1895,11 +1895,6 @@ impl CarlaBackend {
         let carla::client::ActorKind::Vehicle(vehicle) = actor.into_kinds() else {
             return Ok(());
         };
-        // CARLA 1.0 (Chaos) has no tire friction to scale: a dry road is every car's own, and
-        // any other road is refused by name below (roadmap 083 step 5).
-        if cfg!(feature = "carla-10") && self.road.friction_factor == 1.0 {
-            return Ok(());
-        }
         let mut control = vehicle.physics_control().wrap_err("read its physics")?;
         let current = super::vehicle_physics::tire_frictions(&control)?;
         let own = self

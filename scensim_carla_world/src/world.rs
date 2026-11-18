@@ -49,7 +49,7 @@ pub struct CarlaWorld {
     handles: BTreeMap<String, u32>,
     map_origin: [f64; 3],
     /// The vehicle spec's physics, for every backend this server connects (roadmap 051 K3).
-    vehicle_physics: Option<carla_physics_spec::CarlaPhysics>,
+    vehicle_physics: Option<crate::backend::carla::vehicle_physics::Physics>,
     /// The stack's state directory, for the signal table (`state_dir`, roadmap 076 A9).
     state_dir: Option<PathBuf>,
     /// CARLA's spectator, moved over the ego after each step when asked (roadmap 068 step 2).
@@ -129,7 +129,7 @@ impl CarlaWorld {
     /// The vehicle spec's physics the ego and agent vehicles get (`vehicle_physics`).
     pub fn with_vehicle_physics(
         mut self,
-        physics: Option<carla_physics_spec::CarlaPhysics>,
+        physics: Option<crate::backend::carla::vehicle_physics::Physics>,
     ) -> Self {
         self.vehicle_physics = physics;
         self
@@ -358,7 +358,7 @@ impl World for CarlaWorld {
 
     fn capabilities(&self) -> Vec<wire::Capability> {
         use wire::Capability as C;
-        let mut caps = vec![
+        vec![
             C::Signals,
             C::Autopilot,
             C::AgentVehicles,
@@ -368,13 +368,7 @@ impl World for CarlaWorld {
             C::Contacts,
             C::RoadCondition,
             C::Environment,
-        ];
-        // A road's friction scales the wheels' PhysX tire friction; CARLA 1.0's Chaos wheels
-        // have none, until roadmap 083 step 5 maps it.
-        if cfg!(feature = "carla-10") {
-            caps.retain(|c| *c != C::RoadCondition);
-        }
-        caps
+        ]
     }
 
     fn ready(&mut self) -> Result<(), String> {
