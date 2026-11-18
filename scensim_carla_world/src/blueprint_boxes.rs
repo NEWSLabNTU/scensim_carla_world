@@ -388,6 +388,34 @@ mod tests {
         assert!((m3.length - 4.792).abs() < 0.01, "{m3:?}");
     }
 
+    /// CARLA 1.0's table (roadmap 083), measured on the packaged 1.0 on 2026-11-18.
+    #[test]
+    fn the_1_0_table_parses_and_has_every_class() {
+        let t = BoxTable::from_yaml(include_str!("../config/blueprint_boxes_1.0.yaml")).unwrap();
+        assert_eq!(t.carla_version, "1.0");
+        for class in [
+            SizeClass::Car,
+            SizeClass::Truck,
+            SizeClass::Bus,
+            SizeClass::Motorcycle,
+            SizeClass::Bicycle,
+            SizeClass::FourWheeled,
+            SizeClass::MiscObject,
+        ] {
+            assert!(
+                t.blueprints.values().any(|bp| class.admits(bp)),
+                "{class:?} has no blueprint on 1.0"
+            );
+        }
+        for (name, bp) in &t.blueprints {
+            assert_eq!(bp.kind == "vehicle", bp.axles.is_some(), "{name}");
+        }
+        // 1.0's Model 3 is another body than 0.9.16's (wheelbase 2.876 against 3.005, track
+        // 1.58 against 1.667): the spec's geometry on 1.0 is roadmap 083 step 5's.
+        let a = t.get(MODEL3).unwrap().axles.unwrap();
+        assert!((a.front_x - a.rear_x - 2.876).abs() < 0.002, "{a:?}");
+    }
+
     #[test]
     fn every_vehicle_has_axles_and_the_model3_matches_its_vehicle_info() {
         let t = shipped();

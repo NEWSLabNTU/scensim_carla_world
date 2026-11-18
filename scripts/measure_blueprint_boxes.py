@@ -57,15 +57,26 @@ def axles(actor, carla):
     tf = actor.get_transform()
     points = []
     for w in wheels:
-        p = carla.Location(w.position.x / 100.0, w.position.y / 100.0, w.position.z / 100.0)
-        # CARLA reports wheel positions in world centimetres once the vehicle has been
-        # simulated, and in the actor's frame before that: tell them apart by height (the
-        # probe is PROBE_Z up).
+        if hasattr(w, "position"):
+            # 0.9.x (PhysX): world centimetres once the vehicle has been simulated, the
+            # actor's frame before that.
+            p = carla.Location(w.position.x / 100.0, w.position.y / 100.0, w.position.z / 100.0)
+        else:
+            # 1.0 (Chaos): `location`, in world metres (measured 2026-11-18, roadmap 083).
+            p = carla.Location(w.location.x, w.location.y, w.location.z)
+        # Tell world from actor frame by height (the probe is PROBE_Z up).
         if abs(p.z - tf.location.z) < 10.0:
-            p = tf.inverse_transform(p)
+            p = to_actor_frame(tf, p, carla)
         points.append((p, w))
-    front = [(p, w) for p, w in points if w.max_steer_angle > 0.0]
-    rear = [(p, w) for p, w in points if w.max_steer_angle <= 0.0]
+    if all(hasattr(w, "axle_type") for _, w in points):
+        # 1.0 (Chaos) names each wheel's axle (1 front, 2 rear), and some of its vehicles
+        # (vehicle.firetruck.actors, vehicle.nissan.patrol) give every wheel a steer angle.
+        front = [(p, w) for p, w in points if int(w.axle_type) == 1]
+        rear = [(p, w) for p, w in points if int(w.axle_type) == 2]
+    else:
+        # 0.9.x: the front wheels are the steered ones.
+        front = [(p, w) for p, w in points if w.max_steer_angle > 0.0]
+        rear = [(p, w) for p, w in points if w.max_steer_angle <= 0.0]
     if not front or not rear:
         return None
 
@@ -77,8 +88,21 @@ def axles(actor, carla):
         "front_x": round(mean_x(front), 3),
         "rear_x": round(mean_x(rear), 3),
         "track": round(max(ys) - min(ys), 3),
-        "wheel_radius": round(rear[0][1].radius / 100.0, 3),
+        "wheel_radius": round(wheel_radius_cm(rear[0][1]) / 100.0, 3),
     }
+
+
+def to_actor_frame(tf, p, carla):
+    """World point `p` in `tf`'s frame. `Transform.inverse_transform` is gone in 1.0's
+    Python API; the inverse matrix is in every version."""
+    m = tf.get_inverse_matrix()
+    v = (p.x, p.y, p.z, 1.0)
+    return carla.Location(*(sum(m[r][c] * v[c] for c in range(4)) for r in range(3)))
+
+
+def wheel_radius_cm(wheel):
+    """A wheel's radius in centimetres: `radius` on 0.9.x, `wheel_radius` on 1.0."""
+    return wheel.radius if hasattr(wheel, "radius") else wheel.wheel_radius
 
 
 def measure(world, bp, carla):
