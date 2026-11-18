@@ -128,6 +128,15 @@ fn choose_blueprint(requested_exists: bool, fallback_exists: Option<bool>) -> Bl
     }
 }
 
+/// The walker a pedestrian gets when its asset key names no blueprint of this CARLA.
+#[cfg(not(feature = "carla-10"))]
+const DEFAULT_WALKER: &str = "walker.pedestrian.0001";
+/// CARLA 1.0 ships walkers 0015-0052 only (0001-0014 are gone), so a scenario's
+/// `walker.pedestrian.0001` falls back here: 0032 is the 1.0 walker nearest 0.9.16's 0001 in
+/// size (1.847 m tall against 1.86; blueprint_boxes_1.0.yaml), found by T3 on 1.0 (083 step 6).
+#[cfg(feature = "carla-10")]
+const DEFAULT_WALKER: &str = "walker.pedestrian.0032";
+
 impl SpawnKind {
     /// Blueprint used when the scenario's asset key does not name a CARLA blueprint.
     fn default_blueprint(self) -> &'static str {
@@ -135,7 +144,7 @@ impl SpawnKind {
             SpawnKind::Ego | SpawnKind::Npc | SpawnKind::AutopilotNpc | SpawnKind::AgentVehicle => {
                 "vehicle.tesla.model3"
             }
-            SpawnKind::Pedestrian => "walker.pedestrian.0001",
+            SpawnKind::Pedestrian => DEFAULT_WALKER,
             SpawnKind::MiscObject => "static.prop.streetbarrier",
         }
     }
@@ -7272,6 +7281,22 @@ mod tests {
         assert_eq!(median_of([2.0].into_iter()), 2.0);
         assert_eq!(median_of([2.0, 4.0].into_iter()), 3.0);
         assert_eq!(median_of(std::iter::empty()), 0.0);
+    }
+
+    /// The walker a pedestrian falls back to exists on the CARLA this binary is built for: its
+    /// version's blueprint table lists it (CARLA 1.0 has no walker 0001; 083 step 6).
+    #[test]
+    fn the_default_walker_is_one_this_carla_ships() {
+        #[cfg(not(feature = "carla-10"))]
+        let table = include_str!("../../../config/blueprint_boxes_0.9.16.yaml");
+        #[cfg(feature = "carla-10")]
+        let table = include_str!("../../../config/blueprint_boxes_1.0.yaml");
+        let boxes = crate::blueprint_boxes::BoxTable::from_yaml(table).unwrap();
+        let walker = SpawnKind::Pedestrian.default_blueprint();
+        assert!(
+            boxes.get(walker).is_some(),
+            "{walker} is not in this version's table"
+        );
     }
 
     /// A pedestrian must not fall back to a car, nor a prop to a walker.
