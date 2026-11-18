@@ -399,8 +399,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 [[package]]
 name = "carla"
 version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ad3c2d704b86160faaede398264481dbb2235a65163c64d93d879cb29b735a8"
+source = "git+https://github.com/jerry73204/carla-rust?rev=3294525#329452512e71b64501e8f89a99fe718d843a5741"
 dependencies = [
  "anyhow",
  "autocxx",
@@ -424,8 +423,7 @@ dependencies = [
 [[package]]
 name = "carla-src"
 version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e1809b23bb40c48a03a412a14e99f4a2e4e008ca37839b6af8cb0cdfb9b9858"
+source = "git+https://github.com/jerry73204/carla-rust?rev=3294525#329452512e71b64501e8f89a99fe718d843a5741"
 dependencies = [
  "anyhow",
  "autotools",
@@ -449,8 +447,7 @@ dependencies = [
 [[package]]
 name = "carla-sys"
 version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e86061775c8a059a932eaf552238eadecd1f10eabe779460ed9f2ded97a5216"
+source = "git+https://github.com/jerry73204/carla-rust?rev=3294525#329452512e71b64501e8f89a99fe718d843a5741"
 dependencies = [
  "anyhow",
  "autocxx",

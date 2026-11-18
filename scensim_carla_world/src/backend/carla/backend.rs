@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::traffic_light_mapper::{carla_state_for_signal, signal_uses_arrows, SignalMap};
+use super::{town_names, version};
 use crate::agent_link::{self, AgentLink};
 use crate::autopilot;
 use crate::blueprint_boxes::{self, BoxTable, Dimensions, SizeClass};
@@ -2148,10 +2149,11 @@ impl CarlaBackend {
         Ok((ids.len() - failed.len(), ids.len()))
     }
 
-    /// The CARLA town the world holds now, by its final name component ("Town01").
+    /// The town the world holds now, by the scenario's name for it ("Town01", also when a
+    /// 1.0 server holds "Carla/Maps/Town01_Opt"; [`town_names::logical`]).
     pub fn current_town(&self) -> String {
         let name = self.world.map().map(|m| m.name()).unwrap_or_default();
-        name.rsplit('/').next().unwrap_or(&name).to_string()
+        town_names::logical(&name, version::built_for())
     }
 
     /// Destroy an actor found by a census and, first, everything attached to it as the
@@ -2561,9 +2563,10 @@ impl CarlaBackend {
             );
         }
 
-        // CARLA reports map names like "Carla/Maps/Town01"; compare on the final component.
-        let current = self.world.map().map(|m| m.name()).unwrap_or_default();
-        let current_town = current.rsplit('/').next().unwrap_or(&current).to_string();
+        // CARLA reports map names like "Carla/Maps/Town01"; compare on the scenario's names
+        // (the final component, and on 1.0 "Town01_Opt" as "Town01"; roadmap 083).
+        let current_town = self.current_town();
+        let town = town_names::logical(&town, version::built_for());
 
         if current_town == town {
             tracing::info!("Map '{town}' is already loaded; not reloading");
@@ -2664,8 +2667,8 @@ impl CarlaBackend {
             );
         }
         let available = self.available_maps.clone().unwrap_or_default();
-        let known = available.iter().any(|m| m.rsplit('/').next() == Some(town));
-        if !known {
+        // On 1.0 the classic towns exist only as layered maps: Town01 loads as Town01_Opt.
+        let Some(on_server) = town_names::on_server(town, &available, version::built_for()) else {
             eyre::bail!(
                 "Map '{town}' is not available on this CARLA server. Available: {}",
                 available
@@ -2674,15 +2677,23 @@ impl CarlaBackend {
                     .collect::<Vec<_>>()
                     .join(", ")
             );
-        }
+        };
 
-        tracing::info!("Loading map '{town}' (CARLA currently holds '{current_town}')");
+        if on_server == town {
+            tracing::info!("Loading map '{town}' (CARLA currently holds '{current_town}')");
+        } else {
+            tracing::info!(
+                "Loading map '{town}' as '{on_server}' (CARLA {}; currently holds \
+                 '{current_town}')",
+                version::BUILT_FOR
+            );
+        }
         // reset_settings = false: the new world stays synchronous, so it advances only when
         // scensim ticks it -- scensim is the only ticker (docs/design/time-and-ticking.md) -- and
         // the frame count after the load is exact. The default reverts it to async, where it
         // free-runs until someone reads it (and loads took 44 s to over 120 s).
         let client = self.client.clone();
-        let name = town.to_string();
+        let name = on_server;
         let bound = self.bound(budgets::LOAD_WORLD_WATCHDOG);
         match self.watched(
             "load_world",

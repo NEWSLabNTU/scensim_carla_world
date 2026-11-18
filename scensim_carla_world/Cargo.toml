@@ -12,12 +12,19 @@ path = "src/main.rs"
 [package.metadata.ros]
 install_to_share = ["config", "launch"]
 
+[features]
+# The CARLA this binary talks to: exactly one (carla-rust refuses none or two). 0.9.16 is the
+# default; `--no-default-features --features carla-10` builds for CARLA 1.0 (roadmap 083).
+default = ["carla-0916"]
+carla-0916 = ["carla/carla-0916"]
+carla-10 = ["carla/carla-10"]
+
 [dependencies]
 scensim_core = { path = "../deps/scensim_world_protocol/scensim_core" }
 # sim_vehicle_spec's carla_physics.yaml as types (roadmap 051 K3)
 carla_physics_spec = { path = "../deps/sim_vehicle_spec/crates/carla_physics_spec" }
-# CARLA: the version is the workspace's feature (CLAUDE.md, "The CARLA version is a Cargo
-# feature").
+# CARLA: the version is this package's feature (above; CLAUDE.md, "The CARLA version is a
+# Cargo feature").
 carla.workspace = true
 zmq = "0.10"
 prost = "0.13"
