@@ -451,7 +451,11 @@ pub fn load(named: &std::path::Path) -> eyre::Result<Physics> {
 /// steer angle in degrees, the torque curve normalised to `max_torque`); everything else the
 /// blueprint's.
 #[cfg(feature = "carla-10")]
-pub fn set_on_road(control: &mut VehiclePhysicsControl, p: &ChaosPhysics, road_factor: f64) {
+pub fn set_on_road(
+    control: &mut VehiclePhysicsControl,
+    p: &ChaosPhysics,
+    road_factor: f64,
+) -> eyre::Result<()> {
     use carla::geom::{Location, Vector2D};
     let v = &p.vehicle;
     control.mass = v.mass as f32;
@@ -475,8 +479,7 @@ pub fn set_on_road(control: &mut VehiclePhysicsControl, p: &ChaosPhysics, road_f
     control.max_rpm = v.max_rpm as f32;
     control.idle_rpm = v.idle_rpm as f32;
     control.brake_effect = v.brake_effect as f32;
-    // load() checked it
-    control.differential_type = v.differential_type().unwrap_or(control.differential_type);
+    control.differential_type = v.differential_type().map_err(|e| eyre::eyre!(e))?;
     control.use_automatic_gears = true;
     control.final_ratio = v.final_ratio as f32;
     control.forward_gear_ratios = v.forward_gear_ratios.iter().map(|r| *r as f32).collect();
@@ -494,6 +497,7 @@ pub fn set_on_road(control: &mut VehiclePhysicsControl, p: &ChaosPhysics, road_f
         wheel.abs_enabled = false;
         wheel.traction_control_enabled = false;
     }
+    Ok(())
 }
 
 /// What a 1.0 actor's physics control says, in the file's units: what 1.0 applies.
@@ -586,7 +590,7 @@ pub fn reapply(
             p.wheels.len()
         );
     }
-    set_on_road(&mut control, p, road_factor);
+    set_on_road(&mut control, p, road_factor)?;
     apply_kept(world, vehicle, &control)
 }
 
