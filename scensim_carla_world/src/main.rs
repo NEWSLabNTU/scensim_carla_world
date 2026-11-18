@@ -16,8 +16,10 @@
 //!
 //! The map's traffic light table (what acb_bridge publishes signals from) is written at an
 //! Initialize that finds it missing or stale: into `<state_dir>/<map>/` with `state_dir`
-//! (roadmap 076 A9), else beside the map. `--generate-signal-table <map dir>` writes it at
-//! once, to the same place, then leaves CARLA as found.
+//! (roadmap 076 A9), else beside the map, as the map datasets ship it
+//! (`<map dir>/carla/traffic_lights.yaml`, a relative `lanelet2_map`; issue 060).
+//! `--generate-signal-table <map dir>` writes it at once, to the same place, then leaves
+//! CARLA as found.
 
 mod actor_census;
 mod backend;

@@ -2832,7 +2832,6 @@ impl CarlaBackend {
         );
         let map_dir = rs::map_dir_of(std::path::Path::new(lanelet2_map_path));
         let state_dir = self.state_dir.as_deref();
-        let dest = rs::table_dir(&map_dir, state_dir);
         let regenerate = format!(
             "ros2 run scensim_carla_world scensim_carla_world --generate-signal-table {}{}",
             map_dir.display(),
@@ -2843,7 +2842,7 @@ impl CarlaBackend {
         );
 
         if self.generate_signal_table {
-            let written = rs::write_table(&dest, &table.to_yaml()?)?;
+            let written = rs::write(&map_dir, state_dir, &table)?;
             tracing::info!(
                 "Traffic light table ({summary}) written to {}",
                 written.display()
@@ -2861,33 +2860,31 @@ impl CarlaBackend {
                 );
                 Ok(())
             }
-            rs::Decision::Write(why) => {
-                match table.to_yaml().and_then(|y| rs::write_table(&dest, &y)) {
-                    Ok(written) => {
-                        tracing::info!(
-                            "Traffic light table {} was {why}; wrote {} ({summary})",
-                            path.display(),
-                            written.display()
-                        );
-                        Ok(())
-                    }
-                    Err(e) if check == rs::Check::Missing => {
-                        tracing::warn!(
-                            "No traffic light table at {} ({summary} resolved), and it cannot \
+            rs::Decision::Write(why) => match rs::write(&map_dir, state_dir, &table) {
+                Ok(written) => {
+                    tracing::info!(
+                        "Traffic light table {} was {why}; wrote {} ({summary})",
+                        path.display(),
+                        written.display()
+                    );
+                    Ok(())
+                }
+                Err(e) if check == rs::Check::Missing => {
+                    tracing::warn!(
+                        "No traffic light table at {} ({summary} resolved), and it cannot \
                              be written ({e:#}): acb_bridge will publish no signals. Give the \
                              stack a writable state_dir, or generate it: {regenerate}",
-                            path.display()
-                        );
-                        Ok(())
-                    }
-                    Err(e) => eyre::bail!(
-                        "The traffic light table {} is {why} (resolved: {summary}), and it \
+                        path.display()
+                    );
+                    Ok(())
+                }
+                Err(e) => eyre::bail!(
+                    "The traffic light table {} is {why} (resolved: {summary}), and it \
                          cannot be rewritten ({e:#}). acb_bridge would publish the wrong \
                          lights. Regenerate it: {regenerate}",
-                        path.display()
-                    ),
-                }
-            }
+                    path.display()
+                ),
+            },
             rs::Decision::Fail(why) => eyre::bail!(
                 "The traffic light table {} does not match CARLA's lights ({why}; resolved: \
                  {summary}). acb_bridge would publish the wrong lights. Regenerate it: \
