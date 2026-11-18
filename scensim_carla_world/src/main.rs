@@ -169,13 +169,21 @@ fn main() -> Result<()> {
         .filter(|p| p.as_os_str() != "none")
     {
         Some(path) => {
-            // the file for this build's CARLA (on 1.0 carla_physics_1.0.yaml; roadmap 083)
+            // the file for this build's CARLA (on 1.0 carla_physics_1.0.yaml; roadmap 083),
+            // named in the log with its body, as acb_bridge names it
             let p = backend::carla::vehicle_physics::load(&path)?;
+            let file = backend::carla::vehicle_physics::physics_path(&path);
             tracing::info!(
-                "Vehicle physics {} ({}, spec_hash {})",
-                backend::carla::vehicle_physics::physics_path(&path).display(),
-                p.blueprint,
-                &p.spec_hash[..p.spec_hash.len().min(12)]
+                "carla_physics {} (applied, the {} body{}): {} for {}",
+                file.display(),
+                backend::carla::vehicle_physics::BODY,
+                if file == path {
+                    String::new()
+                } else {
+                    format!("; the launch named {}", path.display())
+                },
+                &p.spec_hash[..p.spec_hash.len().min(12)],
+                p.blueprint
             );
             Some(p)
         }

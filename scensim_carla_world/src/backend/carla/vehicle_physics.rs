@@ -416,6 +416,12 @@ pub fn set_tire_frictions(
 #[cfg(feature = "carla-10")]
 pub type Physics = ChaosPhysics;
 
+/// The body this binary's physics is for (sim_vehicle_spec's `bodies:`), as acb names it.
+#[cfg(feature = "carla-10")]
+pub const BODY: &str = "carla-1.0";
+#[cfg(not(feature = "carla-10"))]
+pub const BODY: &str = "carla-0.9.16";
+
 /// The file for this build's CARLA, from the one the launch names: on 1.0 the launch's
 /// `carla_physics.yaml` (0.9.16's, the default path) means its sibling
 /// `carla_physics_1.0.yaml`; a 1.0 file named directly is taken as is.
