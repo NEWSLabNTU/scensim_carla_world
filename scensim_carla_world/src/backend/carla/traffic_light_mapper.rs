@@ -134,11 +134,26 @@ pub struct CarlaSignal {
 /// cannot be confused -- in Town01 the closest pair is tens of metres apart.
 pub const SIGNAL_MATCH_TOLERANCE_M: f64 = 5.0;
 
+/// How close a Lanelet2 element must be to a CARLA light that another element already claimed
+/// to share it.
+///
+/// A map that draws one Lanelet2 traffic light per signal head (crdesigner does: Town03
+/// regenerated from its OpenDRIVE has 156 light ways for CARLA's 38 lights) puts every head of
+/// one CARLA light on that light's position, 0.3 m apart (scensim issue 068). Those are one
+/// physical light, and the one-to-one pass leaves all but one unmatched: never set GREEN,
+/// never published, an unknown signal Autoware stops for. Within this distance an element is
+/// that light, not a neighbour: distinct lights at one intersection are metres apart, and they
+/// still bind one-to-one.
+pub const SIGNAL_SHARE_M: f64 = 1.0;
+
 /// Outcome of matching Lanelet2 traffic lights against CARLA's.
 #[derive(Debug, Default)]
 pub struct MatchReport {
     /// Lanelet2 way ID to OpenDRIVE sign ID.
     pub matched: HashMap<i32, String>,
+    /// Of `matched`, the elements that share a CARLA light another element claimed first
+    /// (within [`SIGNAL_SHARE_M`] of it).
+    pub shared: usize,
     /// Lanelet2 way IDs with no CARLA light within tolerance.
     pub unmatched_lanelet: Vec<i32>,
     /// OpenDRIVE sign IDs no Lanelet2 element claimed.
@@ -151,6 +166,10 @@ pub struct MatchReport {
 /// elements resolving to the same CARLA actor would silently drive one light from two
 /// scenario signals. Ties are broken by proximity, so the closer element wins and the other
 /// is reported unmatched rather than quietly mis-bound.
+///
+/// Then one exception: an element still unmatched whose nearest CARLA light is within
+/// [`SIGNAL_SHARE_M`] shares that light. It sits on the light's own position, so it is one
+/// of that light's heads, not another light ([`MatchReport::shared`] counts them).
 ///
 /// Matching is planar; see [`TrafficLightElement::planar_distance_to_carla`].
 pub fn match_signals(
@@ -181,6 +200,25 @@ pub fn match_signals(
         }
         report.matched.insert(way_id, opendrive_id.to_string());
         claimed_carla.insert(opendrive_id, way_id);
+    }
+
+    // The heads of a light already claimed: an unmatched element on a light's own position.
+    for element in lanelet {
+        if report.matched.contains_key(&element.way_id) {
+            continue;
+        }
+        let nearest = carla
+            .iter()
+            .map(|s| (element.planar_distance_to_carla(origin, s.x, s.y), s))
+            .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        if let Some((d, signal)) = nearest {
+            if d <= SIGNAL_SHARE_M && claimed_carla.contains_key(signal.opendrive_id.as_str()) {
+                report
+                    .matched
+                    .insert(element.way_id, signal.opendrive_id.clone());
+                report.shared += 1;
+            }
+        }
     }
 
     report.unmatched_lanelet = lanelet
@@ -480,7 +518,7 @@ mod tests {
     }
 
     /// Two elements near one CARLA light must not both bind to it -- that would drive one
-    /// light from two scenario signals. The closer one wins.
+    /// light from two scenario signals. The closer one wins (2 m is beyond SIGNAL_SHARE_M).
     #[test]
     fn a_carla_light_is_claimed_at_most_once() {
         let report = match_signals(
@@ -489,6 +527,55 @@ mod tests {
         );
         assert_eq!(report.matched.len(), 1);
         assert_eq!(report.matched.get(&1).map(String::as_str), Some("A"));
+        assert_eq!(report.unmatched_lanelet, vec![2]);
+    }
+
+    /// A head drawn on the light's own position (a map with one light way per head, issue 068)
+    /// is that light: it shares it rather than staying unmatched and undriven.
+    #[test]
+    fn a_head_on_a_claimed_light_shares_it() {
+        let report = match_signals(
+            &[
+                element(1, 100.0, 0.0),
+                element(2, 100.3, 0.0),
+                element(3, 100.0, 0.9),
+            ],
+            &[carla("A", 100.0, 0.0)],
+        );
+        assert_eq!(report.matched.len(), 3, "{report:?}");
+        for way in [1, 2, 3] {
+            assert_eq!(report.matched.get(&way).map(String::as_str), Some("A"));
+        }
+        assert_eq!(report.shared, 2);
+        assert!(report.unmatched_lanelet.is_empty());
+        assert!(report.unmatched_carla.is_empty());
+    }
+
+    /// Sharing goes to the nearest light only: a head between two lights takes the closer.
+    #[test]
+    fn a_shared_head_takes_its_nearest_light() {
+        let report = match_signals(
+            &[
+                element(1, 0.0, 0.0),
+                element(2, 10.0, 0.0),
+                element(3, 9.6, 0.0),
+            ],
+            &[carla("west", 0.0, 0.0), carla("east", 10.0, 0.0)],
+        );
+        assert_eq!(report.matched.get(&3).map(String::as_str), Some("east"));
+        assert_eq!(report.shared, 1);
+    }
+
+    /// The claim-once rule above (a neighbour 2 m away stays unmatched) is what sharing keeps:
+    /// nothing beyond SIGNAL_SHARE_M shares.
+    #[test]
+    fn nothing_beyond_the_share_distance_shares() {
+        let report = match_signals(
+            &[element(1, 100.0, 0.0), element(2, 101.2, 0.0)],
+            &[carla("A", 100.0, 0.0)],
+        );
+        assert_eq!(report.matched.len(), 1);
+        assert_eq!(report.shared, 0);
         assert_eq!(report.unmatched_lanelet, vec![2]);
     }
 

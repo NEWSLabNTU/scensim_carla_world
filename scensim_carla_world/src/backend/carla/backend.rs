@@ -2954,14 +2954,17 @@ impl CarlaBackend {
             &carla_signals,
             self.map_origin,
         );
+        let shared = report.shared;
         let added = self.signal_map.merge_matched(report.matched);
 
         tracing::info!(
             "Traffic light matching: {} lanelet element(s), {} CARLA light(s), {added} newly \
-             mapped by position (tolerance {}m)",
+             mapped by position (tolerance {}m; {shared} of the matched share a light \
+             another element claimed, within {}m of it: one light's heads)",
             lanelet_lights.len(),
             carla_signals.len(),
-            super::traffic_light_mapper::SIGNAL_MATCH_TOLERANCE_M
+            super::traffic_light_mapper::SIGNAL_MATCH_TOLERANCE_M,
+            super::traffic_light_mapper::SIGNAL_SHARE_M
         );
 
         if !report.unmatched_lanelet.is_empty() {
