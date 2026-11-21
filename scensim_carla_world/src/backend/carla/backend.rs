@@ -1232,7 +1232,7 @@ fn view_of(t: &Transform) -> View {
 pub struct SpawnBody {
     pub actor_id: u32,
     pub blueprint: String,
-    pub blueprint_box: Option<gap_trace::BlueprintBox>,
+    pub blueprint_box: Option<gap_trace::AssetBox>,
     /// `[x, y, yaw]`, the `OriginOffset`.
     pub origin_offset: [f64; 3],
     pub declared_center: [f64; 3],
@@ -1472,7 +1472,8 @@ impl CarlaBackend {
             .filter_map(|name| {
                 let id = self.entities.get(&name)?.carla_actor_id;
                 let actor = snapshot.find(id)?;
-                let (pose, velocity) = carla_trace_state(&actor, map_origin);
+                let gap_trace::SimState { pose, velocity, .. } =
+                    carla_trace_state(&actor, map_origin);
                 Some((name, pose, velocity))
             })
             .collect();
@@ -2374,7 +2375,7 @@ impl CarlaBackend {
         };
         let map_origin = self.map_origin;
         let carla_frame = Some(snapshot.frame() as u64);
-        self.gap_trace.emit_staged_at(now, carla_frame, |id| {
+        self.gap_trace.emit_staged_at(now, carla_frame, None, |id| {
             snapshot
                 .find(id)
                 .map(|actor| carla_trace_state(&actor, map_origin))
@@ -2398,7 +2399,7 @@ impl CarlaBackend {
                 let actor_id = entity.carla_actor_id;
                 Some(gap_trace::StagedEntity {
                     name: u.name.clone(),
-                    actor_id,
+                    sim_id: actor_id,
                     ssv2: ssv2_trace_pose(pose),
                     // Held this frame: an ego contact, or another body's box within
                     // PROXIMITY_HOLD_M when it would have snapped (roadmap 032 N2).
@@ -3489,6 +3490,10 @@ impl CarlaBackend {
                 NpcMotion::Kinematic => "kinematic",
             },
             crate::contact_report::now_unix(),
+            // The world server's trace is off (the bridge's is the run's truth file); a
+            // stand-alone trace names no map.
+            "",
+            0.0,
         );
 
         // Destroy the previous run's actors BEFORE dropping the name mappings. Clearing
@@ -4305,7 +4310,7 @@ impl CarlaBackend {
             } else {
                 (f64::from(l.x), f64::from(l.y))
             };
-            gap_trace::BlueprintBox {
+            gap_trace::AssetBox {
                 location: [x, -y, f64::from(l.z)],
                 extent: [d.length / 2.0, d.width / 2.0, d.height / 2.0],
             }
@@ -4504,6 +4509,13 @@ impl CarlaBackend {
                 self.gap_trace.entity(gap_trace::EntityHeader {
                     frame: self.collision_monitor.frame(),
                     name: name.to_string(),
+                    index: 0, // the recorder assigns it
+                    role: if entity_type == EntityType::Ego {
+                        gap_trace::Role::Ego
+                    } else {
+                        gap_trace::Role::Scenario
+                    },
+                    subtype: String::new(),
                     kind: match entity_type {
                         EntityType::Ego => gap_trace::Kind::Ego,
                         EntityType::Vehicle => gap_trace::Kind::Vehicle,
@@ -4517,9 +4529,9 @@ impl CarlaBackend {
                             .map_or([0.0; 3], |d| [d.length, d.width, d.height]),
                     },
                     origin_offset: [origin_offset.x, origin_offset.y, origin_offset.yaw],
-                    actor_id,
-                    blueprint: blueprint_key.clone(),
-                    blueprint_box: trace_box,
+                    sim_id: actor_id,
+                    asset: blueprint_key.clone(),
+                    asset_box: trace_box,
                 });
             }
         }
@@ -6782,7 +6794,7 @@ fn ssv2_trace_pose(pose: &Pose) -> gap_trace::Pose6 {
 fn carla_trace_state(
     actor: &carla::client::ActorSnapshot,
     map_origin: MapOrigin,
-) -> gap_trace::CarlaState {
+) -> gap_trace::SimState {
     let t = actor.transform();
     let v = actor.velocity();
     let (x, y, z) = map_origin.carla_to_map(
@@ -6796,7 +6808,12 @@ fn carla_trace_state(
         f64::from(t.rotation.yaw),
     );
     let (vx, vy, vz) = coordinate_conversion::carla_to_ros_velocity(v.x, v.y, v.z);
-    ([x, y, z, roll, pitch, yaw], [vx, vy, vz])
+    gap_trace::SimState {
+        pose: [x, y, z, roll, pitch, yaw],
+        velocity: [vx, vy, vz],
+        angular_velocity: [0.0; 3],
+        measured: true,
+    }
 }
 
 /// How close a declared box must be to a blueprint's measured one to be that box, m: the
