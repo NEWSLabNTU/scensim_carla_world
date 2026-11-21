@@ -6825,6 +6825,8 @@ fn carla_trace_state(
         velocity: [vx, vy, vz],
         angular_velocity: [0.0; 3],
         measured: true,
+        // acb runs the ego's vehicle interface: no taken command here (092 K2.4)
+        command: None,
     }
 }
 
