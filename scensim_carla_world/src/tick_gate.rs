@@ -18,6 +18,12 @@
 //! - `DONE <frame>` -- the follower finished CARLA frame `<frame>`;
 //! - `BYE` -- the follower leaves: ticks no longer wait.
 //!
+//! The gate waits once per SSv2 step, before the step's first tick, for the CARLA frame the
+//! previous step ended on: the frame the truth stream reported, the only one a follower sees.
+//! The ticks inside a step (its substeps) and the settling tick after each spawn are not
+//! waited for ([`StepGate`]): no truth frame names them, so no follower could finish them, and
+//! each cost a whole timeout (092 K4's exit runs: four after the spawns of 20 NPCs).
+//!
 //! The wait is bounded (`tick_gate_timeout_ms`): a follower that does not answer in time does
 //! not stop the simulation, the tick goes ahead and the miss is counted, per follower. A follower silent
 //! for [`SILENT_LEAVES`] is taken as gone, so a crashed follower costs at most a few
@@ -204,6 +210,45 @@ impl TickGate {
     }
 }
 
+/// The gate as a step uses it: [`StepGate::before_step`] waits for the frame the last step
+/// ended on, [`StepGate::after_step`] records it. Ticks between steps (a spawn's settling tick)
+/// change neither.
+pub struct StepGate {
+    pub gate: TickGate,
+    last_step_frame: Option<u64>,
+}
+
+impl StepGate {
+    pub fn new(gate: TickGate) -> Self {
+        Self {
+            gate,
+            last_step_frame: None,
+        }
+    }
+
+    /// Before a step's first tick: every follower finished the frame the previous step ended on.
+    pub fn before_step(&mut self) {
+        if let Some(frame) = self.last_step_frame {
+            self.gate.wait_for(frame);
+        }
+    }
+
+    /// After a step's last tick: `frame` is the frame it ended on (None: unknown).
+    pub fn after_step(&mut self, frame: Option<u64>) {
+        self.last_step_frame = frame;
+    }
+
+    /// A new world: no step has ended in it.
+    pub fn reset(&mut self) {
+        self.last_step_frame = None;
+    }
+
+    #[cfg(test)]
+    pub fn last_step_frame(&self) -> Option<u64> {
+        self.last_step_frame
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,6 +314,38 @@ mod tests {
         // Nothing for frame 8: the wait ends at the timeout and is counted.
         g.wait_for(8);
         assert_eq!(g.missed, 1);
+    }
+
+    #[test]
+    fn a_step_waits_for_the_frame_the_last_step_ended_on_not_for_ticks_between() {
+        // 092 K4: the follower finishes the frames the truth stream reports, one per step. A
+        // spawn's settling ticks (frames 11 to 14 here) and a step's substeps carry no truth
+        // frame, so waiting for them cost a timeout each.
+        let gate = TickGate::bind("127.0.0.1:0", Duration::from_millis(300)).unwrap();
+        let addr = gate.sock.local_addr().unwrap();
+        let mut g = StepGate::new(gate);
+        let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        peer.send_to(b"HELLO", addr).unwrap();
+        g.before_step(); // the first step: nothing ended yet, no wait
+        g.after_step(Some(10)); // its last tick was frame 10, which the truth stream reports
+        peer.send_to(b"DONE 10", addr).unwrap();
+        // settling ticks after spawns: frames 11 to 14, neither recorded nor waited for
+        let start = Instant::now();
+        g.before_step();
+        assert!(
+            start.elapsed() < Duration::from_millis(200),
+            "{:?}",
+            start.elapsed()
+        );
+        assert_eq!(g.gate.missed, 0);
+        // a step with 3 substeps ends on 17; the follower has not finished it: one miss, once
+        g.after_step(Some(17));
+        g.before_step();
+        assert_eq!(g.gate.missed, 1);
+        g.reset();
+        g.before_step(); // a new world: nothing to wait for
+        assert_eq!(g.gate.missed, 1);
+        assert_eq!(g.last_step_frame(), None);
     }
 
     #[test]

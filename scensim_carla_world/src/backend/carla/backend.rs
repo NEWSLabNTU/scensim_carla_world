@@ -1087,8 +1087,8 @@ pub struct CarlaBackend {
     /// The test-only fault hook (034 step 2, [`HangHook`]); `None` in every product run.
     hang_hook: Option<HangHook>,
     /// The tick gate (`tick_gate`, [`crate::tick_gate`]): a follower that joined it is
-    /// waited for before every tick.
-    tick_gate: Option<crate::tick_gate::TickGate>,
+    /// waited for before each step's first tick, for the frame the previous step ended on.
+    tick_gate: Option<crate::tick_gate::StepGate>,
     /// Test-only: every spawn RPC's timeout (`SCENSIM_TEST_SPAWN_TIMEOUT_MS`, 034 step 4), to
     /// force the timed-out spawn that is then adopted. `None` in every product run.
     spawn_timeout_hook: Option<Duration>,
@@ -1270,10 +1270,10 @@ impl CarlaBackend {
                     Ok(g) => {
                         tracing::info!(
                             "tick gate on {addr}: a follower that joins is waited for \
-                             before every tick, at most {} ms",
+                             before each step, at most {} ms",
                             timeout.as_millis()
                         );
-                        Some(g)
+                        Some(crate::tick_gate::StepGate::new(g))
                     }
                     Err(e) => {
                         tracing::error!("tick gate on {addr}: {e}; running without it");
@@ -2513,7 +2513,7 @@ impl CarlaBackend {
         self.restore_traffic_lights();
         self.restore_async_mode();
         self.shut_down_traffic_manager("bridge shutdown");
-        if let Some(g) = &self.tick_gate {
+        if let Some(g) = self.tick_gate.as_ref().map(|g| &g.gate) {
             tracing::info!(
                 "tick gate: {} wait(s), {:.1} s waited, {} tick(s) went ahead of a follower",
                 g.waits,
@@ -2598,6 +2598,9 @@ impl CarlaBackend {
             self.world_id = world.id().ok();
             self.world = world;
             self.last_tick_frame = None;
+            if let Some(g) = self.tick_gate.as_mut() {
+                g.reset();
+            }
             self.spectator = None;
             self.forget_road_graph();
             tracing::info!(
@@ -3270,6 +3273,9 @@ impl CarlaBackend {
         self.world = world;
         self.world_id = world_id;
         self.last_tick_frame = None;
+        if let Some(g) = self.tick_gate.as_mut() {
+            g.reset();
+        }
         self.spectator = None;
         self.consecutive_carla_failures = 0;
         self.carla_unreachable = false;
@@ -3693,6 +3699,11 @@ impl CarlaBackend {
         let substeps = self.substeps.max(1);
         let ssv2_frame = self.collision_monitor.frame();
         let mut substep = 0;
+        // the gate: once per step, before its first tick (092 K4: not each substep or a
+        // spawn's settling tick, which no truth frame names)
+        if let Some(g) = self.tick_gate.as_mut() {
+            g.before_step();
+        }
         // Every substep, then the frame after the last one: what SSv2 is told about.
         let mut tick = |c: &mut Self| {
             substep += 1;
@@ -3710,6 +3721,10 @@ impl CarlaBackend {
         for _ in 0..substeps {
             tick(self)?;
         }
+        let ended_on = self.last_tick_frame;
+        if let Some(g) = self.tick_gate.as_mut() {
+            g.after_step(ended_on);
+        }
         Ok(match read_frame_of(&self.world) {
             Ok((elapsed, _)) => sim_ns(elapsed),
             Err(e) => {
@@ -3726,9 +3741,6 @@ impl CarlaBackend {
     /// ([`CarlaBackend::wedged`]): CARLA's frame and settings are logged, and this and every
     /// later tick fail without touching CARLA.
     fn watched_tick(&mut self, step: &str) -> std::result::Result<u64, TickFailure> {
-        if let (Some(gate), Some(frame)) = (self.tick_gate.as_mut(), self.last_tick_frame) {
-            gate.wait_for(frame);
-        }
         let mut world = self.world.clone();
         let bound = self.bound(budgets::TICK_WATCHDOG);
         match self.watched("world.tick()", step, bound, move || {
