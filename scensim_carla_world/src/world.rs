@@ -706,6 +706,9 @@ impl World for CarlaWorld {
                         linear: v3(v),
                         angular: None,
                     }),
+                    // acb runs the ego's vehicle interface, not this server: no command to
+                    // report (092 K2.4's `command` is Isaac's for now)
+                    command: None,
                 })
             })
             .collect();
