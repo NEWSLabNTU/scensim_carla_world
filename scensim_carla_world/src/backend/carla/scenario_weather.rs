@@ -10,7 +10,7 @@
 //! CARLA's renderer. A sun's illuminance has no CARLA counterpart and is ignored.
 
 use super::weather::Weather;
-use scensim_core::environment::{PrecipitationType, ScenarioWeather};
+use scensim_core::environment::{Precipitation, PrecipitationType, ScenarioWeather, Sun};
 
 /// The weather fields the scenario has set so far; a part not given keeps its last value.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -80,6 +80,53 @@ impl Sky {
     }
 }
 
+impl Sky {
+    /// What CARLA shows (`w`, read back from it) of the parts the scenario has set, in
+    /// OpenSCENARIO's units: `with`'s mappings run backwards (092 K9's knob profiles). Wind is
+    /// left out: CARLA has no direction for it. A sun read back is CARLA's, scenario-placed or
+    /// from the time of day.
+    pub fn read_back(&self, w: &Weather) -> ScenarioWeather {
+        let mut out = ScenarioWeather::default();
+        if self.cloudiness.is_some() {
+            out.cloud_cover_oktas = Some((f64::from(w.cloudiness) / 100.0 * 8.0).round() as u8);
+        }
+        if self.precipitation.is_some() {
+            out.precipitation = Some(if w.precipitation <= 0.0 {
+                Precipitation {
+                    kind: PrecipitationType::Dry,
+                    intensity: 0.0,
+                }
+            } else {
+                Precipitation {
+                    kind: PrecipitationType::Rain,
+                    intensity: f64::from(w.precipitation) / 100.0 * 25.0,
+                }
+            });
+        }
+        if self.fog_density.is_some() {
+            out.fog_visual_range = Some((1.0 - f64::from(w.fog_density) / 100.0) * 1000.0);
+        }
+        if self.sun.is_some() {
+            let (azimuth, elevation) = scenario_sun(w.sun_azimuth_angle, w.sun_altitude_angle);
+            out.sun = Some(Sun {
+                azimuth,
+                elevation,
+                illuminance: 0.0,
+            });
+        }
+        out
+    }
+}
+
+/// CARLA's sun angles (deg) as OpenSCENARIO's (rad: azimuth clockwise from north, elevation):
+/// `carla_sun` backwards.
+pub fn scenario_sun(azimuth: f32, altitude: f32) -> (f64, f64) {
+    (
+        (f64::from(azimuth) + 90.0).rem_euclid(360.0).to_radians(),
+        f64::from(altitude).to_radians(),
+    )
+}
+
 /// An OpenSCENARIO sun (rad: azimuth clockwise from north, elevation) as CARLA's angles, deg.
 pub fn carla_sun(azimuth: f64, elevation: f64) -> (f32, f32) {
     (
@@ -95,6 +142,43 @@ mod tests {
 
     fn clear_noon() -> Weather {
         super::super::weather::preset("ClearNoon").unwrap().1
+    }
+
+    #[test]
+    fn what_is_set_reads_back_in_the_scenarios_units() {
+        let w = ScenarioWeather {
+            fog_visual_range: Some(250.0),
+            cloud_cover_oktas: Some(4),
+            sun: Some(Sun {
+                azimuth: 1.0,
+                elevation: 0.3,
+                illuminance: 0.0,
+            }),
+            precipitation: Some(Precipitation {
+                kind: PrecipitationType::Rain,
+                intensity: 5.0,
+            }),
+            ..Default::default()
+        };
+        let sky = Sky::default().with(&w).unwrap();
+        let shown = sky.apply(clear_noon(), None);
+        let back = sky.read_back(&shown);
+        assert!((back.fog_visual_range.unwrap() - 250.0).abs() < 1e-3);
+        assert_eq!(back.cloud_cover_oktas, Some(4));
+        let sun = back.sun.unwrap();
+        assert!((sun.azimuth - 1.0).abs() < 1e-5 && (sun.elevation - 0.3).abs() < 1e-5);
+        assert!((back.precipitation.unwrap().intensity - 5.0).abs() < 1e-4);
+        assert!(back.wind.is_none());
+        // only what the scenario set
+        let fog_only = Sky::default()
+            .with(&ScenarioWeather {
+                fog_visual_range: Some(80.0),
+                ..Default::default()
+            })
+            .unwrap();
+        let back = fog_only.read_back(&fog_only.apply(clear_noon(), None));
+        assert!(back.sun.is_none() && back.cloud_cover_oktas.is_none());
+        assert!((back.fog_visual_range.unwrap() - 80.0).abs() < 1e-3);
     }
 
     #[test]

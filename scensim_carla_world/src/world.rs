@@ -368,6 +368,7 @@ impl World for CarlaWorld {
             C::Contacts,
             C::RoadCondition,
             C::Environment,
+            C::EnvironmentApplied,
         ]
     }
 
@@ -801,6 +802,14 @@ impl World for CarlaWorld {
         result.map_err(|e| refusal(e, backend))
     }
 
+    fn applied_environment(&mut self) -> WorldResult<wire::ScenarioWeather> {
+        let backend = self.backend()?;
+        let result = backend.applied_environment();
+        result
+            .map(|w| wire_scenario_weather(&w))
+            .map_err(|e| refusal(e, backend))
+    }
+
     fn set_weather(&mut self, req: &wire::SetWeather) -> WorldResult<wire::WeatherReply> {
         let request = wire_form::request_of(&req.weather.clone().unwrap_or_default())
             .map_err(Refusal::new)?;
@@ -857,6 +866,34 @@ impl World for CarlaWorld {
 }
 
 /// The world protocol's scenario weather as the backend takes it.
+/// `scenario_weather` backwards: a read-back on the wire.
+fn wire_scenario_weather(w: &ScenarioWeather) -> wire::ScenarioWeather {
+    use wire::scenario_weather as sw;
+    wire::ScenarioWeather {
+        cloud_cover: w.cloud_cover_oktas.map(|o| sw::CloudCover {
+            oktas: u32::from(o),
+        }),
+        sun: w.sun.map(|s| sw::Sun {
+            azimuth: s.azimuth,
+            elevation: s.elevation,
+            illuminance: s.illuminance,
+        }),
+        fog: w.fog_visual_range.map(|v| sw::Fog { visual_range: v }),
+        precipitation: w.precipitation.map(|p| sw::Precipitation {
+            r#type: match p.kind {
+                PrecipitationType::Dry => sw::PrecipitationType::Dry,
+                PrecipitationType::Rain => sw::PrecipitationType::Rain,
+                PrecipitationType::Snow => sw::PrecipitationType::Snow,
+            } as i32,
+            intensity: p.intensity,
+        }),
+        wind: w.wind.map(|x| sw::Wind {
+            direction: x.direction,
+            speed: x.speed,
+        }),
+    }
+}
+
 fn scenario_weather(w: &wire::ScenarioWeather) -> ScenarioWeather {
     use wire::scenario_weather::PrecipitationType as P;
     ScenarioWeather {

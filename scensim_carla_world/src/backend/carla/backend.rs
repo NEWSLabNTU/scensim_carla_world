@@ -469,7 +469,7 @@ use crate::sim_time::{fmt_ns, sim_ns};
 use crate::spawn_ladder;
 use crate::spectator::View;
 use crate::weather::{WeatherReply, WeatherRequest};
-use scensim_core::environment::{self, TimeOfDay};
+use scensim_core::environment::{self, ScenarioWeather, TimeOfDay};
 
 /// `(elapsed_seconds, delta_seconds)` of `world`'s current snapshot.
 /// Why a watched tick failed (roadmap 032 N5).
@@ -1626,6 +1626,15 @@ impl CarlaBackend {
     /// `UpdateEnvironment` (roadmap 047): the road condition, as far as CARLA has one
     /// (`road_condition`), and the weather and time of day (`scenario_weather`). Refused whole,
     /// with every problem, before anything changes.
+    /// 092 K9 (`ENVIRONMENT_APPLIED`): CARLA's weather now, read back from CARLA, of the parts
+    /// the scenario has set, in OpenSCENARIO's units.
+    pub fn applied_environment(&self) -> Result<ScenarioWeather, BackendError> {
+        match self.weather() {
+            Ok(now) => Ok(self.sky.read_back(&now)),
+            Err(e) => failed(format!("read the weather back: {e:#}")),
+        }
+    }
+
     pub fn update_environment(&mut self, env: &Environment) -> Result<(), BackendError> {
         let mut problems = Vec::new();
         let road = match env.road_condition.as_ref().map(road_condition::applied) {
