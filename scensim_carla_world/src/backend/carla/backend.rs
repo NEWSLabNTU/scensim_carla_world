@@ -3740,9 +3740,10 @@ impl CarlaBackend {
             .map(|(_, b)| b)
     }
 
-    /// Before a tick of `dt` seconds: every `COMMANDED` body integrates its latest command
-    /// (the tick gate's, read now, so a free-running command counts from the next tick) and is
-    /// posed there. A body with no command yet stands where it spawned.
+    /// Before a step of `dt` seconds (its first tick): every `COMMANDED` body integrates its
+    /// latest command over the step, as the batch does (the tick gate's, read now, so a
+    /// free-running command counts from the next step) and is posed there. A body with no
+    /// command yet stands where it spawned.
     fn advance_commanded(&mut self, dt: f64) {
         if dt <= 0.0 {
             return;
@@ -3863,9 +3864,10 @@ impl CarlaBackend {
             c.tick_time += started.elapsed();
             result.map(|_| ())
         };
-        let dt = self.sync_timing().fixed_delta_seconds;
+        // once per SSv2 step, over the whole step, as the batch integrates (092 K12, D5): the
+        // body moves by the same law and dt as there, whatever the substeps
+        self.advance_commanded(self.step_time);
         for _ in 0..substeps {
-            self.advance_commanded(dt);
             tick(self)?;
         }
         let ended_on = self.last_tick_frame;

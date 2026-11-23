@@ -1,9 +1,10 @@
 //! `COMMANDED` bodies (092 K12): a behaviour model on the truth stream commands an entity, and
 //! this server moves it. Each command (speed, heading, acceleration limit, in SSv2's frame)
 //! reaches the tick gate with the follower's acknowledgement of the frame it answers
-//! ([`crate::tick_gate`]); before each tick the body integrates its latest command, as the batch
-//! does (`scensim_batch.core.Models`): the speed moves toward the commanded speed by at most the
-//! limit times dt, the yaw is set to the heading, and the position moves `v dt` along it. The
+//! ([`crate::tick_gate`]); before each step's first tick the body integrates its latest command
+//! over the step, as the batch does (`scensim_batch.core.Models`, the same dt): the speed moves
+//! toward the commanded speed by at most the limit times dt, the yaw is set to the heading, and
+//! the position moves `v dt` along it. The
 //! actor is then posed with physics off. CARLA reports a physics-off actor at 0 m/s, so what
 //! SSv2 is told (twist, acceleration, jerk) is this state, not CARLA's.
 
@@ -89,6 +90,40 @@ mod tests {
             y += v * c.heading.sin() * dt;
             assert_eq!((b.x, b.y, b.v, b.yaw), (x, y, v, c.heading), "step {k}");
             assert_eq!(b.cmd_frame, 100 + k as u64);
+        }
+    }
+
+    /// 092 K12's exit check 1: the batch's law (`scensim_batch.core.model_law`, which wrote
+    /// `commanded_law.json`; scensim_batch's test_model_law checks the file against it) and
+    /// this integrator, on the same commands, agree within float64 rounding.
+    #[test]
+    fn the_integrator_matches_the_batchs_law_on_its_fixture() {
+        let f: serde_json::Value =
+            serde_json::from_str(include_str!("commanded_law.json")).expect("the fixture");
+        let dt = f["dt"].as_f64().unwrap();
+        let start = f["start"].as_array().unwrap();
+        let mut b = Body::at(
+            start[0].as_f64().unwrap(),
+            start[1].as_f64().unwrap(),
+            0.0,
+            0.0,
+        );
+        let commands = f["commands"].as_array().unwrap();
+        let states = f["states"].as_array().unwrap();
+        assert_eq!(commands.len(), states.len());
+        assert!(commands.len() >= 20);
+        let close = |a: f64, b: f64| (a - b).abs() <= 1e-12 * a.abs().max(b.abs()).max(1.0);
+        for (k, (c, want)) in commands.iter().zip(states).enumerate() {
+            let n = |v: &serde_json::Value, i: usize| v[i].as_f64().unwrap();
+            b.step(&cmd(n(c, 0), n(c, 1), n(c, 2)), k as u64 + 1, dt);
+            let got = [b.x, b.y, b.v, b.yaw];
+            for (i, g) in got.iter().enumerate() {
+                assert!(
+                    close(*g, n(want, i)),
+                    "step {k} field {i}: {g} vs {}",
+                    n(want, i)
+                );
+            }
         }
     }
 
