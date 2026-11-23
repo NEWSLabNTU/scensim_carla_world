@@ -20,7 +20,8 @@
 //!
 //! A follower that commands entities (092 K12: a behaviour model on the truth stream) appends
 //! its commands to `DONE`, so they are here before the tick that follows the frame they answer:
-//! `DONE <frame> [<entity> <speed> <heading> <accel_limit>]...` (SSv2's frame: m/s, rad, m/s2).
+//! `DONE <frame> [<entity> <speed> <heading> <accel_limit>]...` (`<frame>` as `DONE`'s: the
+//! truth frame's `sim_frame`; m/s, rad in SSv2's map frame, m/s2).
 //! Free-running, it sends the same list as `CMD <frame> ...`, which joins nothing and is never
 //! waited for. A datagram is at most [`MAX_DATAGRAM`] bytes (it never fragments on an Ethernet
 //! link), a name at most [`MAX_NAME`]; a datagram over either, or one that does not parse, is
