@@ -1092,6 +1092,13 @@ pub struct CarlaBackend {
     /// `COMMANDED` bodies (092 K12), by actor: the entity's name (its commands are by name)
     /// and the state the tick gate's commands integrate.
     commanded: HashMap<u32, (String, crate::commanded::Body)>,
+    /// Commands naming an entity that is not COMMANDED here, each (entity, frame) once, and
+    /// the newest such frame per entity (092 K12, D7).
+    unknown_commands: u64,
+    unknown_seen: HashMap<String, u64>,
+    /// The gate's (unknown, missed, malformed) at the world's last load: the counts the steps
+    /// report are since then.
+    command_base: (u64, u64, u64),
     /// Test-only: every spawn RPC's timeout (`SCENSIM_TEST_SPAWN_TIMEOUT_MS`, 034 step 4), to
     /// force the timed-out spawn that is then adopted. `None` in every product run.
     spawn_timeout_hook: Option<Duration>,
@@ -1348,6 +1355,9 @@ impl CarlaBackend {
             },
             tick_gate,
             commanded: HashMap::new(),
+            unknown_commands: 0,
+            unknown_seen: HashMap::new(),
+            command_base: (0, 0, 0),
             highest_actor_id: None,
             spawn_timeout_hook: {
                 let hook = spawn_timeout_hook_from_env();
@@ -3399,6 +3409,7 @@ impl CarlaBackend {
         self.body_boxes.clear();
         self.tracked_npcs.clear();
         self.commanded.clear();
+        self.reset_command_counts();
         self.kinematic_fallback.clear();
         self.miss_watch.reset();
         self.stale_snapshots = 0;
@@ -3497,6 +3508,7 @@ impl CarlaBackend {
         self.body_boxes.clear();
         self.tracked_npcs.clear();
         self.commanded.clear();
+        self.reset_command_counts();
         self.kinematic_fallback.clear();
         self.miss_watch.reset();
         self.stale_snapshots = 0;
@@ -3732,7 +3744,7 @@ impl CarlaBackend {
     /// (the tick gate's, read now, so a free-running command counts from the next tick) and is
     /// posed there. A body with no command yet stands where it spawned.
     fn advance_commanded(&mut self, dt: f64) {
-        if self.commanded.is_empty() || dt <= 0.0 {
+        if dt <= 0.0 {
             return;
         }
         let Some(gate) = self.tick_gate.as_mut().map(|g| &mut g.gate) else {
@@ -3740,6 +3752,24 @@ impl CarlaBackend {
         };
         gate.drain();
         let commands = gate.commands().clone();
+        // a command for an entity not commanded here: counted once per (entity, frame)
+        for (entity, c) in &commands {
+            if !self.commanded.values().any(|(n, _)| n == entity)
+                && self.unknown_seen.get(entity) != Some(&c.frame)
+            {
+                self.unknown_seen.insert(entity.clone(), c.frame);
+                self.unknown_commands += 1;
+                if self.unknown_commands.is_power_of_two() {
+                    tracing::warn!(
+                        "tick gate: a command for '{entity}', which is not a COMMANDED body here                          ({} so far)",
+                        self.unknown_commands
+                    );
+                }
+            }
+        }
+        if self.commanded.is_empty() {
+            return;
+        }
         let mut poses = Vec::with_capacity(self.commanded.len());
         for (&actor_id, (name, body)) in self.commanded.iter_mut() {
             let Some(c) = commands.get(name.as_str()) else {
@@ -3774,6 +3804,27 @@ impl CarlaBackend {
                 tracing::warn!("COMMANDED {name}: set_transform: {e}");
             }
         }
+    }
+
+    /// What the tick gate's commands could not do since the world's last load: commands for
+    /// an entity not COMMANDED here, frames ticked without an acknowledgement, datagrams
+    /// dropped (`StepReply.command_counts`, 092 K12); `None` without a tick gate.
+    pub fn command_counts(&self) -> Option<(u64, u64, u64)> {
+        let gate = &self.tick_gate.as_ref()?.gate;
+        let (u, m, d) = self.command_base;
+        Some((
+            self.unknown_commands - u,
+            gate.missed - m,
+            gate.malformed - d,
+        ))
+    }
+
+    fn reset_command_counts(&mut self) {
+        self.unknown_seen.clear();
+        self.command_base = match self.tick_gate.as_ref() {
+            Some(g) => (self.unknown_commands, g.gate.missed, g.gate.malformed),
+            None => (self.unknown_commands, 0, 0),
+        };
     }
 
     /// The CARLA timing for the current step: one SSv2 frame split into `substeps` ticks,

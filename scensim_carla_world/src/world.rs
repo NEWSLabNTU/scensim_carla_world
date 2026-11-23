@@ -766,6 +766,17 @@ impl World for CarlaWorld {
         } else {
             Vec::new()
         };
+        // What the tick gate's commands could not do since the world's load (092 K12, D7).
+        let command_counts =
+            backend
+                .command_counts()
+                .map(
+                    |(unknown_entity, gate_misses, malformed)| wire::CommandCounts {
+                        unknown_entity,
+                        gate_misses,
+                        malformed,
+                    },
+                );
         // A commanded body's frame of the command that moved it (092 K12, truth schema 3).
         let cmd_frames: std::collections::HashMap<String, u64> = states
             .iter()
@@ -814,6 +825,7 @@ impl World for CarlaWorld {
             sim_time_ns: ns,
             tick_seconds: tick.as_secs_f64(),
             episode_id,
+            command_counts,
         })
     }
 
