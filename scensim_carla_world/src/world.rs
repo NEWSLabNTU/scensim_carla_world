@@ -771,10 +771,11 @@ impl World for CarlaWorld {
             backend
                 .command_counts()
                 .map(
-                    |(unknown_entity, gate_misses, malformed)| wire::CommandCounts {
+                    |(unknown_entity, gate_misses, malformed, stale)| wire::CommandCounts {
                         unknown_entity,
                         gate_misses,
                         malformed,
+                        stale,
                     },
                 );
         // A commanded body's frame of the command that moved it (092 K12, truth schema 3).

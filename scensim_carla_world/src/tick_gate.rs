@@ -244,6 +244,10 @@ pub struct TickGate {
     pub waited: Duration,
     /// Datagrams dropped whole: over a bound, or not parsing (092 K12).
     pub malformed: u64,
+    /// Commands dropped as stale (answering a frame at or before a floor), each (entity,
+    /// frame) once: a datagram of an earlier body or run. Seen, never applied (092 K12).
+    pub stale: u64,
+    stale_seen: BTreeMap<String, u64>,
     /// Each entity's latest command (the highest frame it answered; a late datagram never
     /// replaces a newer command).
     commands: BTreeMap<String, Commanded>,
@@ -251,6 +255,10 @@ pub struct TickGate {
     /// body is spawned or destroyed ([`TickGate::forget`]), so a command meant for an earlier
     /// body of the name (a previous run's, a late datagram) never moves the new one.
     floors: BTreeMap<String, u64>,
+    /// For every entity, the frame at or before which a command is stale: the frame the last
+    /// step ended on when the gate was cleared (a new world or run), so a previous run's last
+    /// datagram, read after the clear, never counts against the new one.
+    world_floor: Option<u64>,
     /// The frame the last step ended on ([`StepGate::after_step`]): a joining follower's
     /// `joined_after`, and a forgotten entity's floor.
     current: Option<u64>,
@@ -269,8 +277,11 @@ impl TickGate {
             waits: 0,
             waited: Duration::ZERO,
             malformed: 0,
+            stale: 0,
+            stale_seen: BTreeMap::new(),
             commands: BTreeMap::new(),
             floors: BTreeMap::new(),
+            world_floor: None,
             current: None,
         })
     }
@@ -309,15 +320,43 @@ impl TickGate {
             .insert(entity.to_string(), self.current.unwrap_or(0));
     }
 
-    /// A new world: every command and floor goes.
+    /// A new world or run: every command and per-entity floor goes, and a command answering
+    /// a frame at or before the last step's is stale for every entity from now on (a datagram
+    /// of the run before, read after this).
     pub fn clear(&mut self) {
         self.commands.clear();
         self.floors.clear();
+        self.stale_seen.clear();
+        if let Some(c) = self.current {
+            self.world_floor = Some(self.world_floor.map_or(c, |w| w.max(c)));
+        }
     }
 
-    /// The frame the last step ended on.
+    /// The frame the last step ended on. A frame below a floor means the world's frames started
+    /// again (a CARLA restart, a world load that resets them): the floors above it go, logged.
     pub fn set_current(&mut self, frame: Option<u64>) {
+        if let Some(f) = frame {
+            let above =
+                self.world_floor.is_some_and(|w| f < w) || self.floors.values().any(|&x| f < x);
+            if above {
+                tracing::warn!(
+                    "tick gate: step frame {f} is below a command floor (world {:?}, entities \
+                     {:?}): the world's frames started again; those floors reset",
+                    self.world_floor,
+                    self.floors
+                );
+                if self.world_floor.is_some_and(|w| f < w) {
+                    self.world_floor = None;
+                }
+                self.floors.retain(|_, x| *x <= f);
+            }
+        }
         self.current = frame;
+    }
+
+    fn is_stale(&self, entity: &str, frame: u64) -> bool {
+        self.world_floor.is_some_and(|w| frame <= w)
+            || self.floors.get(entity).is_some_and(|f| frame <= *f)
     }
 
     /// One datagram: its gate message, then its commands.
@@ -328,10 +367,20 @@ impl TickGate {
                     self.apply(from, m, Instant::now());
                 }
                 for command in d.commands {
-                    let stale = self
-                        .floors
-                        .get(&command.entity)
-                        .is_some_and(|f| d.frame <= *f);
+                    let stale = self.is_stale(&command.entity, d.frame);
+                    if stale && self.stale_seen.get(&command.entity) != Some(&d.frame) {
+                        self.stale_seen.insert(command.entity.clone(), d.frame);
+                        self.stale += 1;
+                        if self.stale.is_power_of_two() {
+                            tracing::info!(
+                                "tick gate: dropped a stale command for '{}' answering frame \
+                                 {} (an earlier body's or run's; {} so far)",
+                                command.entity,
+                                d.frame,
+                                self.stale
+                            );
+                        }
+                    }
                     let newer = !stale
                         && self
                             .commands
@@ -447,9 +496,10 @@ impl StepGate {
 
     /// A new world: no step has ended in it.
     pub fn reset(&mut self) {
+        // clear first: the floor is the last step's frame, before it is forgotten
+        self.gate.clear();
         self.last_step_frame = None;
         self.gate.set_current(None);
-        self.gate.clear();
     }
 
     #[cfg(test)]
@@ -598,19 +648,68 @@ mod tests {
         s.gate.drain();
         assert!(s.gate.commands().is_empty(), "{:?}", s.gate.commands());
         assert_eq!(s.gate.malformed, 0); // stale is not malformed
-                                         // run 2's own first command, answering its first frame, is taken
+        assert_eq!(s.gate.stale, 1); // but counted
+                                     // run 2's own first command, answering its first frame, is taken
         s.after_step(Some(3408));
         peer.send_to(b"CMD 3408 walker 0 1.5 1.5", addr).unwrap();
         std::thread::sleep(Duration::from_millis(20));
         s.gate.drain();
         assert_eq!(s.gate.commands()["walker"].frame, 3408);
-        // a new world clears every command and floor
+        // a new world clears every command; a command from before it is stale
         s.reset();
         assert!(s.gate.commands().is_empty());
+        peer.send_to(b"CMD 3408 walker 1 0 1", addr).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        s.gate.drain();
+        assert!(s.gate.commands().is_empty(), "{:?}", s.gate.commands());
+        assert_eq!(s.gate.stale, 2);
+        // its frames started again (a CARLA restart): the floor resets, a new command is taken
+        s.after_step(Some(5));
         peer.send_to(b"CMD 7 walker 1 0 1", addr).unwrap();
         std::thread::sleep(Duration::from_millis(20));
         s.gate.drain();
         assert_eq!(s.gate.commands()["walker"].frame, 7);
+        assert_eq!(s.gate.stale, 2);
+    }
+
+    #[test]
+    fn a_previous_runs_last_command_read_after_the_next_runs_clear_is_stale_not_unknown() {
+        // 092 K12's second exit runs: run 1's runner answered its last frame after the world's
+        // last step; the datagram was read at run 2's first step, after Initialize cleared the
+        // gate, and counted as a command for an entity not commanded (run 2's walker was not
+        // spawned yet). Same world, no reload: frames go on.
+        let mut s =
+            StepGate::new(TickGate::bind("127.0.0.1:0", Duration::from_millis(300)).unwrap());
+        let addr = s.gate.sock.local_addr().unwrap();
+        let run1 = UdpSocket::bind("127.0.0.1:0").unwrap();
+        run1.send_to(b"HELLO", addr).unwrap();
+        s.after_step(Some(499));
+        run1.send_to(b"DONE 499 walker 1.4 0 1.5", addr).unwrap();
+        s.before_step();
+        assert_eq!(s.gate.commands()["walker"].frame, 499);
+        s.after_step(Some(500)); // run 1's last step
+                                 // run 1 ends; its runner answers frame 500 and leaves; nothing reads the socket yet
+        run1.send_to(b"DONE 500 walker 1.4 0 1.5", addr).unwrap();
+        run1.send_to(b"DONE 500 walker 1.4 0 1.5", addr).unwrap(); // a resend: counted once
+        run1.send_to(b"BYE", addr).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        // run 2's Initialize (the backend's reset_command_counts)
+        s.gate.clear();
+        // run 2's first step drains: no command stands for "walker", so none is unknown
+        s.before_step();
+        s.gate.drain();
+        assert!(s.gate.commands().is_empty(), "{:?}", s.gate.commands());
+        assert_eq!(s.gate.stale, 1);
+        assert_eq!((s.gate.missed, s.gate.malformed), (0, 0));
+        // run 2's runner answers run 2's frames, after the floor: taken
+        s.after_step(Some(506));
+        let run2 = UdpSocket::bind("127.0.0.1:0").unwrap();
+        run2.send_to(b"HELLO", addr).unwrap();
+        run2.send_to(b"DONE 506 walker 0 1.5 1.5", addr).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        s.gate.drain();
+        assert_eq!(s.gate.commands()["walker"].frame, 506);
+        assert_eq!(s.gate.stale, 1);
     }
 
     #[test]

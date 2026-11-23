@@ -1098,7 +1098,7 @@ pub struct CarlaBackend {
     unknown_seen: HashMap<String, u64>,
     /// The gate's (unknown, missed, malformed) at the world's last load: the counts the steps
     /// report are since then.
-    command_base: (u64, u64, u64),
+    command_base: (u64, u64, u64, u64),
     /// Test-only: every spawn RPC's timeout (`SCENSIM_TEST_SPAWN_TIMEOUT_MS`, 034 step 4), to
     /// force the timed-out spawn that is then adopted. `None` in every product run.
     spawn_timeout_hook: Option<Duration>,
@@ -1357,7 +1357,7 @@ impl CarlaBackend {
             commanded: HashMap::new(),
             unknown_commands: 0,
             unknown_seen: HashMap::new(),
-            command_base: (0, 0, 0),
+            command_base: (0, 0, 0, 0),
             highest_actor_id: None,
             spawn_timeout_hook: {
                 let hook = spawn_timeout_hook_from_env();
@@ -3843,14 +3843,16 @@ impl CarlaBackend {
 
     /// What the tick gate's commands could not do since the world's last load: commands for
     /// an entity not COMMANDED here, frames ticked without an acknowledgement, datagrams
-    /// dropped (`StepReply.command_counts`, 092 K12); `None` without a tick gate.
-    pub fn command_counts(&self) -> Option<(u64, u64, u64)> {
+    /// dropped, commands dropped as stale (`StepReply.command_counts`, 092 K12); `None`
+    /// without a tick gate.
+    pub fn command_counts(&self) -> Option<(u64, u64, u64, u64)> {
         let gate = &self.tick_gate.as_ref()?.gate;
-        let (u, m, d) = self.command_base;
+        let (u, m, d, st) = self.command_base;
         Some((
             self.unknown_commands - u,
             gate.missed - m,
             gate.malformed - d,
+            gate.stale - st,
         ))
     }
 
@@ -3861,8 +3863,13 @@ impl CarlaBackend {
             g.gate.clear();
         }
         self.command_base = match self.tick_gate.as_ref() {
-            Some(g) => (self.unknown_commands, g.gate.missed, g.gate.malformed),
-            None => (self.unknown_commands, 0, 0),
+            Some(g) => (
+                self.unknown_commands,
+                g.gate.missed,
+                g.gate.malformed,
+                g.gate.stale,
+            ),
+            None => (self.unknown_commands, 0, 0, 0),
         };
     }
 
