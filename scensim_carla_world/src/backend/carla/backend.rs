@@ -1089,6 +1089,9 @@ pub struct CarlaBackend {
     /// The tick gate (`tick_gate`, [`crate::tick_gate`]): a follower that joined it is
     /// waited for before each step's first tick, for the frame the previous step ended on.
     tick_gate: Option<crate::tick_gate::StepGate>,
+    /// `COMMANDED` bodies (092 K12), by actor: the entity's name (its commands are by name)
+    /// and the state the tick gate's commands integrate.
+    commanded: HashMap<u32, (String, crate::commanded::Body)>,
     /// Test-only: every spawn RPC's timeout (`SCENSIM_TEST_SPAWN_TIMEOUT_MS`, 034 step 4), to
     /// force the timed-out spawn that is then adopted. `None` in every product run.
     spawn_timeout_hook: Option<Duration>,
@@ -1344,6 +1347,7 @@ impl CarlaBackend {
                 hook
             },
             tick_gate,
+            commanded: HashMap::new(),
             highest_actor_id: None,
             spawn_timeout_hook: {
                 let hook = spawn_timeout_hook_from_env();
@@ -1997,6 +2001,7 @@ impl CarlaBackend {
         self.body_boxes.remove(&actor_id);
         self.tracked_npcs.remove(&actor_id);
         self.kinematic_fallback.remove(&actor_id);
+        self.commanded.remove(&actor_id);
     }
 
     /// Bind the release channel, or explain why we are not using one.
@@ -2631,6 +2636,7 @@ impl CarlaBackend {
             self.walker_height.clear();
             self.body_boxes.clear();
             self.tracked_npcs.clear();
+            self.commanded.clear();
             self.kinematic_fallback.clear();
             self.kinematic_fallback.clear();
             self.miss_watch.reset();
@@ -3392,6 +3398,7 @@ impl CarlaBackend {
         self.walker_height.clear();
         self.body_boxes.clear();
         self.tracked_npcs.clear();
+        self.commanded.clear();
         self.kinematic_fallback.clear();
         self.miss_watch.reset();
         self.stale_snapshots = 0;
@@ -3489,6 +3496,7 @@ impl CarlaBackend {
         self.walker_height.clear();
         self.body_boxes.clear();
         self.tracked_npcs.clear();
+        self.commanded.clear();
         self.kinematic_fallback.clear();
         self.miss_watch.reset();
         self.stale_snapshots = 0;
@@ -3691,6 +3699,83 @@ impl CarlaBackend {
         }
     }
 
+    /// Make the spawned walker `name` a `COMMANDED` body (092 K12), at rest at `pose` (SSv2's
+    /// map frame). It was spawned kinematic, physics off.
+    pub fn command_entity(&mut self, name: &str, pose: &Pose) -> std::result::Result<(), String> {
+        let actor_id = self
+            .entities
+            .get(name)
+            .map(|e| e.carla_actor_id)
+            .ok_or_else(|| format!("{name:?} is not spawned"))?;
+        let p = pose.position.unwrap_or_default();
+        let q = pose.orientation.unwrap_or_default();
+        let (_, _, yaw) = coordinate_conversion::quaternion_to_euler(q.x, q.y, q.z, q.w);
+        self.commanded.insert(
+            actor_id,
+            (
+                name.to_string(),
+                crate::commanded::Body::at(p.x, p.y, p.z, yaw),
+            ),
+        );
+        Ok(())
+    }
+
+    /// A `COMMANDED` body's state, by entity name.
+    pub fn commanded_body(&self, name: &str) -> Option<&crate::commanded::Body> {
+        self.commanded
+            .values()
+            .find(|(n, _)| n == name)
+            .map(|(_, b)| b)
+    }
+
+    /// Before a tick of `dt` seconds: every `COMMANDED` body integrates its latest command
+    /// (the tick gate's, read now, so a free-running command counts from the next tick) and is
+    /// posed there. A body with no command yet stands where it spawned.
+    fn advance_commanded(&mut self, dt: f64) {
+        if self.commanded.is_empty() || dt <= 0.0 {
+            return;
+        }
+        let Some(gate) = self.tick_gate.as_mut().map(|g| &mut g.gate) else {
+            return;
+        };
+        gate.drain();
+        let commands = gate.commands().clone();
+        let mut poses = Vec::with_capacity(self.commanded.len());
+        for (&actor_id, (name, body)) in self.commanded.iter_mut() {
+            let Some(c) = commands.get(name.as_str()) else {
+                continue;
+            };
+            body.step(&c.command, c.frame, dt);
+            let (qx, qy, qz, qw) = coordinate_conversion::euler_to_quaternion(0.0, 0.0, body.yaw);
+            let pose = Pose {
+                position: Some(geometry_msgs::Point {
+                    x: body.x,
+                    y: body.y,
+                    z: body.z,
+                }),
+                orientation: Some(geometry_msgs::Quaternion {
+                    x: qx,
+                    y: qy,
+                    z: qz,
+                    w: qw,
+                }),
+            };
+            poses.push((actor_id, name.clone(), pose));
+        }
+        for (actor_id, name, pose) in poses {
+            let Some(origin_offset) = self.entities.get(&name).map(|e| e.origin_offset) else {
+                continue;
+            };
+            let mut transform = ros_pose_to_carla_transform(&pose, origin_offset, self.map_origin);
+            if let Some(z) = self.walker_teleport_z(actor_id, &transform.location) {
+                transform.location.z = z;
+            }
+            if let Err(e) = self.set_actor_transform(actor_id, &transform) {
+                tracing::warn!("COMMANDED {name}: set_transform: {e}");
+            }
+        }
+    }
+
     /// The CARLA timing for the current step: one SSv2 frame split into `substeps` ticks,
     /// each with short PhysX substeps. See [`sync_timing`].
     fn sync_timing(&self) -> SyncTiming {
@@ -3727,7 +3812,9 @@ impl CarlaBackend {
             c.tick_time += started.elapsed();
             result.map(|_| ())
         };
+        let dt = self.sync_timing().fixed_delta_seconds;
         for _ in 0..substeps {
+            self.advance_commanded(dt);
             tick(self)?;
         }
         let ended_on = self.last_tick_frame;

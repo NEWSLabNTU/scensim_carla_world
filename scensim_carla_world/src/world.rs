@@ -358,7 +358,7 @@ impl World for CarlaWorld {
 
     fn capabilities(&self) -> Vec<wire::Capability> {
         use wire::Capability as C;
-        vec![
+        let mut caps = vec![
             C::Signals,
             C::Autopilot,
             C::AgentVehicles,
@@ -369,7 +369,12 @@ impl World for CarlaWorld {
             C::RoadCondition,
             C::Environment,
             C::EnvironmentApplied,
-        ]
+        ];
+        // COMMANDED bodies (092 K12): their commands arrive at the tick gate, so only with one.
+        if !self.config.tick_gate.trim().is_empty() {
+            caps.push(C::Commands);
+        }
+        caps
     }
 
     fn ready(&mut self) -> Result<(), String> {
@@ -468,6 +473,22 @@ impl World for CarlaWorld {
             wire::Kind::Pedestrian => EntityKind::Pedestrian,
             _ => EntityKind::MiscObject,
         };
+        if motion == wire::Motion::Commanded {
+            // Pedestrians first (092 K12, 133): a vehicle behaviour model is the next step.
+            if kind != wire::Kind::Pedestrian {
+                return Err(Refusal::new(format!(
+                    "{:?}: COMMANDED bodies are pedestrians here; a commanded {kind:?} is not \
+                     supported yet",
+                    req.name
+                )));
+            }
+            if pose.is_none() {
+                return Err(Refusal::new(format!(
+                    "{:?}: a COMMANDED body needs its spawn pose",
+                    req.name
+                )));
+            }
+        }
         let backend = self.backend()?;
         if kind == wire::Kind::Ego
             && !req.role_name.is_empty()
@@ -495,6 +516,12 @@ impl World for CarlaWorld {
         };
         let result = backend.spawn(&request);
         result.map_err(|e| refusal(e, backend))?;
+        if motion == wire::Motion::Commanded {
+            let at = request.pose.as_ref().expect("checked above");
+            backend
+                .command_entity(&req.name, at)
+                .map_err(Refusal::new)?;
+        }
         let body = backend.take_spawn_body();
         self.entities.insert(
             handle,
@@ -570,10 +597,19 @@ impl World for CarlaWorld {
                     ..Default::default()
                 }
             });
+            // A COMMANDED body is this server's to move (092 K12): a pose for it is ignored.
+            let commanded = self
+                .entities
+                .get(&p.handle)
+                .is_some_and(|e| e.motion == wire::Motion::Commanded);
             entities.push(EntityStatus {
                 name,
                 action_status,
-                pose: p.pose.as_ref().map(|q| self.to_map(q)),
+                pose: if commanded {
+                    None
+                } else {
+                    p.pose.as_ref().map(|q| self.to_map(q))
+                },
             });
         }
         let overwrite = req.overwrite_ego_status;
@@ -587,6 +623,15 @@ impl World for CarlaWorld {
             return Err(Refusal::fatal(reason.to_string()));
         }
         let samples = backend.take_tracking_samples();
+        let commanded: BTreeMap<String, crate::commanded::Body> = outcome
+            .entities
+            .iter()
+            .filter_map(|s| {
+                backend
+                    .commanded_body(&s.name)
+                    .map(|b| (s.name.clone(), b.clone()))
+            })
+            .collect();
         let mut reply = wire::ApplyReply {
             failure: outcome.failure.unwrap_or_default(),
             ..Default::default()
@@ -598,6 +643,39 @@ impl World for CarlaWorld {
                 continue;
             };
             let entity = &self.entities[&handle];
+            if entity.motion == wire::Motion::Commanded {
+                // This server moves it, physics off, so its state is the integrator's: CARLA
+                // reports a physics-off actor at 0 m/s (092 K12).
+                let Some(b) = commanded.get(&status.name) else {
+                    continue;
+                };
+                let (qx, qy, qz, qw) = euler_to_quaternion(0.0, 0.0, b.yaw);
+                let map_pose = geometry_msgs::Pose {
+                    position: Some(geometry_msgs::Point {
+                        x: b.x,
+                        y: b.y,
+                        z: b.z,
+                    }),
+                    orientation: Some(geometry_msgs::Quaternion {
+                        x: qx,
+                        y: qy,
+                        z: qz,
+                        w: qw,
+                    }),
+                };
+                reply.read_back.push(wire::ReadBack {
+                    handle,
+                    pose: Some(self.to_world(&map_pose)),
+                    twist: Some(wire::Twist {
+                        linear: v3([b.v, 0.0, 0.0]),
+                        angular: v3([0.0, 0.0, 0.0]),
+                    }),
+                    accel: v3([b.accel, 0.0, 0.0]),
+                    linear_jerk: b.jerk,
+                    cmd_frame: b.cmd_frame,
+                });
+                continue;
+            }
             let read_back = match entity.kind {
                 wire::Kind::Ego => !overwrite,
                 _ => matches!(
@@ -622,6 +700,7 @@ impl World for CarlaWorld {
                 }),
                 accel: a.accel.and_then(|x| vec(x.linear)),
                 linear_jerk: a.linear_jerk,
+                cmd_frame: 0,
             });
         }
         // Tracked bodies: this frame's flags and tracking records.

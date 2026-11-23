@@ -24,6 +24,7 @@
 mod actor_census;
 mod backend;
 mod blueprint_boxes;
+mod commanded;
 mod map_props;
 mod sensor_release;
 mod spawn_ladder;
