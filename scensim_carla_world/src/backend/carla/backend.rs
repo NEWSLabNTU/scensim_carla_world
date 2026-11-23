@@ -1471,7 +1471,7 @@ impl CarlaBackend {
     /// Every entity's actor after the last tick, from one world snapshot: its transform in
     /// the map frame as `[x, y, z, roll, pitch, yaw]` (ROS, the actor origin) and its
     /// velocity, by SSv2 name. Empty when no snapshot can be read.
-    pub fn actor_states(&mut self) -> Vec<(String, gap_trace::Pose6, [f64; 3])> {
+    pub fn actor_states(&mut self) -> Vec<ActorState> {
         let snapshot = match self.fresh_snapshot() {
             Ok(s) => s,
             Err(e) => {
@@ -1480,6 +1480,34 @@ impl CarlaBackend {
             }
         };
         let map_origin = self.map_origin;
+        // The physics vehicles' controls (issue 135): `Vehicle::control` reads LibCarla's copy
+        // of the last tick (the episode's snapshot, this step's: this server is the only one
+        // that ticks), so the lookup costs no RPC; the actor list is fetched once per step.
+        let with_control: Vec<u32> = self
+            .entities
+            .names()
+            .filter_map(|name| {
+                let e = self.entities.get(&name)?;
+                self.reports_control(&name, e.entity_type, e.carla_actor_id)
+                    .then_some(e.carla_actor_id)
+            })
+            .collect();
+        let vehicles = if with_control.is_empty() {
+            None
+        } else {
+            self.world
+                .actors_by_ids(&with_control)
+                .inspect_err(|e| tracing::debug!("No actors for the controls ({e})"))
+                .ok()
+        };
+        let control_of = |id: u32| -> Option<gap_trace::AppliedControl> {
+            if !with_control.contains(&id) {
+                return None;
+            }
+            let actor = vehicles.as_ref()?.find(id).ok()??;
+            let vehicle = carla::client::Vehicle::try_from(actor).ok()?;
+            vehicle.control().ok().map(|c| applied_control(&c))
+        };
         let states = self
             .entities
             .names()
@@ -1488,11 +1516,29 @@ impl CarlaBackend {
                 let actor = snapshot.find(id)?;
                 let gap_trace::SimState { pose, velocity, .. } =
                     carla_trace_state(&actor, map_origin);
-                Some((name, pose, velocity))
+                let control = control_of(id);
+                Some(ActorState {
+                    name,
+                    pose,
+                    velocity,
+                    control,
+                })
             })
             .collect();
         self.post_tick_snapshot = Some(snapshot);
         states
+    }
+
+    /// Whether a body's actuator control is reported (issue 135): a vehicle CARLA moves by its
+    /// physics under a `VehicleControl` (the ego, a tracked NPC vehicle, an autopilot or agent
+    /// one), not a kinematic body, a walker or a commanded one.
+    fn reports_control(&self, name: &str, entity_type: EntityType, actor_id: u32) -> bool {
+        reports_control(
+            entity_type,
+            self.tracked_npcs.get(&actor_id).is_some_and(|n| !n.walker),
+            self.autopilot.contains_key(name) || self.agent_vehicles.contains(name),
+            self.kinematic_fallback.contains(&actor_id) || self.commanded.contains_key(&actor_id),
+        )
     }
 
     /// The spectator's transform and `target`'s, for the world server's spectator (roadmap 068
@@ -6995,6 +7041,46 @@ fn ssv2_trace_pose(pose: &Pose) -> gap_trace::Pose6 {
     [p.x, p.y, p.z, roll, pitch, yaw]
 }
 
+/// One body's state after a step, for the reply's `EntityState` (`actor_states`): its pose and
+/// velocity in the map frame, raw (no `OriginOffset` undone), and a physics vehicle's control.
+pub struct ActorState {
+    pub name: String,
+    pub pose: gap_trace::Pose6,
+    pub velocity: [f64; 3],
+    /// The `VehicleControl` CARLA held for it in the step (issue 135), where it is reported.
+    pub control: Option<gap_trace::AppliedControl>,
+}
+
+/// The rule of [`CarlaBackend::reports_control`] (issue 135): the ego, and a vehicle that is
+/// tracked or driven by CARLA (autopilot, agent), unless it is posed (kinematic or commanded).
+fn reports_control(
+    entity_type: EntityType,
+    tracked_vehicle: bool,
+    simulator_driven: bool,
+    posed: bool,
+) -> bool {
+    !posed
+        && match entity_type {
+            EntityType::Ego => true,
+            EntityType::Vehicle => tracked_vehicle || simulator_driven,
+            _ => false,
+        }
+}
+
+/// CARLA's `VehicleControl` as the truth records it (issue 135): raw, CARLA's units and signs
+/// (throttle and brake 0..1, steer -1..1 with right positive).
+pub fn applied_control(c: &carla::rpc::VehicleControl) -> gap_trace::AppliedControl {
+    gap_trace::AppliedControl {
+        throttle: f64::from(c.throttle),
+        brake: f64::from(c.brake),
+        steer: f64::from(c.steer),
+        hand_brake: c.hand_brake,
+        reverse: c.reverse,
+        manual_gear_shift: c.manual_gear_shift,
+        gear: c.gear,
+    }
+}
+
 /// An actor's state from a world snapshot as the gap trace writes it: its transform and
 /// velocity in the map frame, raw (no `OriginOffset` undone).
 fn carla_trace_state(
@@ -7022,6 +7108,8 @@ fn carla_trace_state(
         // acb runs the ego's vehicle interface: no taken command here (092 K2.4)
         command: None,
         cmd_frame: None,
+        // the vehicle's control is read apart (actor_states, issue 135)
+        control: None,
     }
 }
 
@@ -7970,6 +8058,38 @@ mod tests {
         );
         assert!(second_ego_rejection(true, None, "Ego").is_none());
         assert!(second_ego_rejection(false, Some("Ego"), "npc").is_none());
+    }
+
+    #[test]
+    fn only_physics_vehicles_report_a_control() {
+        use EntityType::*;
+        assert!(reports_control(Ego, false, false, false));
+        assert!(reports_control(Vehicle, true, false, false)); // tracked
+        assert!(reports_control(Vehicle, false, true, false)); // autopilot or agent
+        assert!(!reports_control(Vehicle, false, false, false)); // kinematic NPC
+        assert!(!reports_control(Vehicle, true, false, true)); // fell back to kinematic
+        assert!(!reports_control(Ego, false, false, true)); // commanded
+        assert!(!reports_control(Pedestrian, true, true, false));
+        assert!(!reports_control(MiscObject, false, false, false));
+    }
+
+    #[test]
+    fn the_applied_control_is_carlas_raw_values_and_signs() {
+        let c = carla::rpc::VehicleControl {
+            throttle: 0.25,
+            brake: 0.5,
+            steer: -0.75,
+            hand_brake: true,
+            reverse: true,
+            manual_gear_shift: true,
+            gear: -1,
+        };
+        let a = applied_control(&c);
+        assert_eq!(
+            (a.throttle, a.brake, a.steer, a.gear),
+            (0.25, 0.5, -0.75, -1)
+        );
+        assert!(a.hand_brake && a.reverse && a.manual_gear_shift);
     }
 
     #[test]

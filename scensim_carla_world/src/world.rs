@@ -781,14 +781,13 @@ impl World for CarlaWorld {
         // A commanded body's frame of the command that moved it (092 K12, truth schema 3).
         let cmd_frames: std::collections::HashMap<String, u64> = states
             .iter()
-            .filter_map(|(name, _, _)| {
-                Some((name.clone(), backend.commanded_body(name)?.cmd_frame))
-            })
+            .filter_map(|st| Some((st.name.clone(), backend.commanded_body(&st.name)?.cmd_frame)))
             .collect();
         let o = self.map_origin;
         let states = states
             .into_iter()
-            .filter_map(|(name, p, v)| {
+            .filter_map(|st| {
+                let (name, p, v) = (st.name, st.pose, st.velocity);
                 let handle = *self.handles.get(&name)?;
                 let q = euler_to_quaternion(p[3], p[4], p[5]);
                 Some(wire::EntityState {
@@ -811,6 +810,16 @@ impl World for CarlaWorld {
                     // report (092 K2.4's `command` is Isaac's for now)
                     command: None,
                     cmd_frame: cmd_frames.get(&name).copied().unwrap_or(0),
+                    // the control CARLA held for a physics vehicle in the step (issue 135)
+                    applied_control: st.control.map(|c| wire::AppliedControl {
+                        throttle: c.throttle,
+                        brake: c.brake,
+                        steer: c.steer,
+                        hand_brake: c.hand_brake,
+                        reverse: c.reverse,
+                        manual_gear_shift: c.manual_gear_shift,
+                        gear: c.gear,
+                    }),
                 })
             })
             .collect();
