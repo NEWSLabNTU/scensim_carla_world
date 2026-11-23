@@ -185,6 +185,9 @@ pub struct GateState {
     pub active: bool,
     pub done: Option<u64>,
     pub last_heard: Option<Instant>,
+    /// The step frame current when it joined: a frame at or before it was reported before
+    /// the follower was there to see it, so the follower is never waited for on it.
+    pub joined_after: Option<u64>,
 }
 
 impl GateState {
@@ -208,7 +211,7 @@ impl GateState {
 
     /// Whether the tick after `frame` must still wait.
     pub fn holds(&self, frame: u64, now: Instant) -> bool {
-        if !self.active {
+        if !self.active || self.joined_after.is_some_and(|j| frame <= j) {
             return false;
         }
         if self
@@ -244,6 +247,13 @@ pub struct TickGate {
     /// Each entity's latest command (the highest frame it answered; a late datagram never
     /// replaces a newer command).
     commands: BTreeMap<String, Commanded>,
+    /// Per entity, the frame at or before which a command is stale: set when the entity's
+    /// body is spawned or destroyed ([`TickGate::forget`]), so a command meant for an earlier
+    /// body of the name (a previous run's, a late datagram) never moves the new one.
+    floors: BTreeMap<String, u64>,
+    /// The frame the last step ended on ([`StepGate::after_step`]): a joining follower's
+    /// `joined_after`, and a forgotten entity's floor.
+    current: Option<u64>,
 }
 
 impl TickGate {
@@ -260,6 +270,8 @@ impl TickGate {
             waited: Duration::ZERO,
             malformed: 0,
             commands: BTreeMap::new(),
+            floors: BTreeMap::new(),
+            current: None,
         })
     }
 
@@ -269,9 +281,11 @@ impl TickGate {
     }
 
     fn apply(&mut self, from: SocketAddr, msg: GateMsg, now: Instant) {
+        let current = self.current;
         let f = self.followers.entry(from).or_default();
         if msg != GateMsg::Bye && !f.state.active {
             tracing::info!("tick gate: follower {from} joined; every tick waits for it");
+            f.state.joined_after = current;
         }
         if msg == GateMsg::Bye && f.state.active {
             tracing::info!(
@@ -287,6 +301,25 @@ impl TickGate {
         &self.commands
     }
 
+    /// The body named `entity` was spawned or destroyed: its command goes, and any command
+    /// answering a frame at or before now is stale for it.
+    pub fn forget(&mut self, entity: &str) {
+        self.commands.remove(entity);
+        self.floors
+            .insert(entity.to_string(), self.current.unwrap_or(0));
+    }
+
+    /// A new world: every command and floor goes.
+    pub fn clear(&mut self) {
+        self.commands.clear();
+        self.floors.clear();
+    }
+
+    /// The frame the last step ended on.
+    pub fn set_current(&mut self, frame: Option<u64>) {
+        self.current = frame;
+    }
+
     /// One datagram: its gate message, then its commands.
     fn take(&mut self, bytes: &[u8], from: SocketAddr) {
         match Datagram::parse(bytes) {
@@ -295,10 +328,15 @@ impl TickGate {
                     self.apply(from, m, Instant::now());
                 }
                 for command in d.commands {
-                    let newer = self
-                        .commands
+                    let stale = self
+                        .floors
                         .get(&command.entity)
-                        .is_none_or(|c| c.frame <= d.frame);
+                        .is_some_and(|f| d.frame <= *f);
+                    let newer = !stale
+                        && self
+                            .commands
+                            .get(&command.entity)
+                            .is_none_or(|c| c.frame <= d.frame);
                     if newer {
                         self.commands.insert(
                             command.entity.clone(),
@@ -404,11 +442,14 @@ impl StepGate {
     /// After a step's last tick: `frame` is the frame it ended on (None: unknown).
     pub fn after_step(&mut self, frame: Option<u64>) {
         self.last_step_frame = frame;
+        self.gate.set_current(frame);
     }
 
     /// A new world: no step has ended in it.
     pub fn reset(&mut self) {
         self.last_step_frame = None;
+        self.gate.set_current(None);
+        self.gate.clear();
     }
 
     #[cfg(test)]
@@ -498,6 +539,78 @@ mod tests {
         assert!(ten.len() <= MAX_DATAGRAM, "{}", ten.len());
         assert_eq!(Datagram::parse(ten.as_bytes()).unwrap().commands.len(), 10);
         assert!(datagram(11).len() > MAX_DATAGRAM);
+    }
+
+    #[test]
+    fn a_follower_joining_after_step_n_is_never_waited_for_on_n_or_before() {
+        // 092 K12's first exit runs: a run's follower joined after the previous run's last
+        // step and was waited for, a whole timeout, on that frame, which it never saw
+        let mut s =
+            StepGate::new(TickGate::bind("127.0.0.1:0", Duration::from_millis(300)).unwrap());
+        let addr = s.gate.sock.local_addr().unwrap();
+        let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        s.after_step(Some(10));
+        peer.send_to(b"HELLO", addr).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        s.gate.drain();
+        let now = Instant::now();
+        assert!(!s.gate.holds(10, now) && !s.gate.holds(9, now));
+        let start = Instant::now();
+        s.before_step(); // waits for frame 10: not this follower's
+        assert!(start.elapsed() < Duration::from_millis(250));
+        assert_eq!(s.gate.missed, 0);
+        // the next step's frame is its own: it is waited for, and missed when silent
+        s.after_step(Some(11));
+        assert!(s.gate.holds(11, Instant::now()));
+        s.before_step();
+        assert_eq!(s.gate.missed, 1);
+        // DONE answers it from then on
+        s.after_step(Some(12));
+        peer.send_to(b"DONE 12", addr).unwrap();
+        let start = Instant::now();
+        s.before_step();
+        assert!(start.elapsed() < Duration::from_millis(250));
+        assert_eq!(s.gate.missed, 1);
+    }
+
+    #[test]
+    fn a_new_body_never_takes_a_command_meant_for_an_earlier_one() {
+        // 092 K12's first exit runs: the second run's walker was moved, at its first step, by
+        // the first run's last command for "walker"
+        let mut s =
+            StepGate::new(TickGate::bind("127.0.0.1:0", Duration::from_millis(300)).unwrap());
+        let addr = s.gate.sock.local_addr().unwrap();
+        let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        // run 1: frames up to 3402
+        s.after_step(Some(3401));
+        peer.send_to(b"CMD 3401 walker 1.4 0 1.5", addr).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        s.gate.drain();
+        assert_eq!(s.gate.commands()["walker"].frame, 3401);
+        s.after_step(Some(3402));
+        // its walker is destroyed; run 2's walker is spawned under the same name
+        s.gate.forget("walker");
+        assert!(s.gate.commands().is_empty());
+        s.gate.forget("walker");
+        // a late datagram of run 1 arrives: stale for the new body, dropped
+        peer.send_to(b"CMD 3402 walker 1.4 0 1.5", addr).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        s.gate.drain();
+        assert!(s.gate.commands().is_empty(), "{:?}", s.gate.commands());
+        assert_eq!(s.gate.malformed, 0); // stale is not malformed
+                                         // run 2's own first command, answering its first frame, is taken
+        s.after_step(Some(3408));
+        peer.send_to(b"CMD 3408 walker 0 1.5 1.5", addr).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        s.gate.drain();
+        assert_eq!(s.gate.commands()["walker"].frame, 3408);
+        // a new world clears every command and floor
+        s.reset();
+        assert!(s.gate.commands().is_empty());
+        peer.send_to(b"CMD 7 walker 1 0 1", addr).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        s.gate.drain();
+        assert_eq!(s.gate.commands()["walker"].frame, 7);
     }
 
     #[test]

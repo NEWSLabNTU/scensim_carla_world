@@ -2011,7 +2011,12 @@ impl CarlaBackend {
         self.body_boxes.remove(&actor_id);
         self.tracked_npcs.remove(&actor_id);
         self.kinematic_fallback.remove(&actor_id);
-        self.commanded.remove(&actor_id);
+        // a destroyed COMMANDED body's commands are stale for the next body of its name
+        if let Some((name, _)) = self.commanded.remove(&actor_id) {
+            if let Some(g) = self.tick_gate.as_mut() {
+                g.gate.forget(&name);
+            }
+        }
     }
 
     /// Bind the release channel, or explain why we are not using one.
@@ -3722,6 +3727,11 @@ impl CarlaBackend {
         let p = pose.position.unwrap_or_default();
         let q = pose.orientation.unwrap_or_default();
         let (_, _, yaw) = coordinate_conversion::quaternion_to_euler(q.x, q.y, q.z, q.w);
+        // a new body stands at its spawn until its own first command (D5): a command meant for
+        // an earlier body of the name (a previous run's) never moves it
+        if let Some(g) = self.tick_gate.as_mut() {
+            g.gate.forget(name);
+        }
         self.commanded.insert(
             actor_id,
             (
@@ -3793,6 +3803,8 @@ impl CarlaBackend {
             };
             poses.push((actor_id, name.clone(), pose));
         }
+        let mut batch = Vec::with_capacity(poses.len());
+        let mut names = Vec::with_capacity(poses.len());
         for (actor_id, name, pose) in poses {
             let Some(origin_offset) = self.entities.get(&name).map(|e| e.origin_offset) else {
                 continue;
@@ -3801,8 +3813,30 @@ impl CarlaBackend {
             if let Some(z) = self.walker_teleport_z(actor_id, &transform.location) {
                 transform.location.z = z;
             }
-            if let Err(e) = self.set_actor_transform(actor_id, &transform) {
-                tracing::warn!("COMMANDED {name}: set_transform: {e}");
+            batch.push(carla::rpc::Command::ApplyTransform {
+                actor_id,
+                transform,
+            });
+            names.push(name);
+        }
+        // One synchronous batch, not set_transform: LibCarla's SetActorTransform is an
+        // asynchronous call, which could reach the server after the tick it was meant for, so
+        // the body's reported pose lagged a frame now and then (092 K12's first exit runs).
+        if batch.is_empty() {
+            return;
+        }
+        let Some(client) = std::sync::Arc::get_mut(&mut self.client) else {
+            tracing::warn!("COMMANDED: the CARLA client is held by a call that never returned");
+            return;
+        };
+        match client.apply_batch_sync(batch, false) {
+            Err(e) => tracing::warn!("COMMANDED {}: apply_batch_sync: {e}", names.join(", ")),
+            Ok(responses) => {
+                for (name, r) in names.iter().zip(&responses) {
+                    if let Some(e) = r.error() {
+                        tracing::warn!("COMMANDED {name}: ApplyTransform: {e}");
+                    }
+                }
             }
         }
     }
@@ -3822,6 +3856,10 @@ impl CarlaBackend {
 
     fn reset_command_counts(&mut self) {
         self.unknown_seen.clear();
+        // a new world: no command of the old one moves a body of the new one
+        if let Some(g) = self.tick_gate.as_mut() {
+            g.gate.clear();
+        }
         self.command_base = match self.tick_gate.as_ref() {
             Some(g) => (self.unknown_commands, g.gate.missed, g.gate.malformed),
             None => (self.unknown_commands, 0, 0),
