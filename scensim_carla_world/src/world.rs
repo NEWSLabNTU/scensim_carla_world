@@ -470,7 +470,9 @@ impl World for CarlaWorld {
                 // The bridge compares the body with SSv2's declared wheels, not this server.
                 wheels: None,
             },
-            wire::Kind::Pedestrian => EntityKind::Pedestrian,
+            wire::Kind::Pedestrian => EntityKind::Pedestrian {
+                model: motion == wire::Motion::Commanded,
+            },
             _ => EntityKind::MiscObject,
         };
         if motion == wire::Motion::Commanded {
@@ -764,6 +766,13 @@ impl World for CarlaWorld {
         } else {
             Vec::new()
         };
+        // A commanded body's frame of the command that moved it (092 K12, truth schema 3).
+        let cmd_frames: std::collections::HashMap<String, u64> = states
+            .iter()
+            .filter_map(|(name, _, _)| {
+                Some((name.clone(), backend.commanded_body(name)?.cmd_frame))
+            })
+            .collect();
         let o = self.map_origin;
         let states = states
             .into_iter()
@@ -789,6 +798,7 @@ impl World for CarlaWorld {
                     // acb runs the ego's vehicle interface, not this server: no command to
                     // report (092 K2.4's `command` is Isaac's for now)
                     command: None,
+                    cmd_frame: cmd_frames.get(&name).copied().unwrap_or(0),
                 })
             })
             .collect();

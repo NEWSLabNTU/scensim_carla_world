@@ -4691,7 +4691,7 @@ impl CarlaBackend {
             // actor (invariant 5). The walker is handled exactly like an NPC vehicle: tracked
             // with `WalkerControl` under `npc_motion: tracked` (the default), else spawned
             // kinematic and teleported.
-            EntityKind::Pedestrian => self.spawn_entity(
+            EntityKind::Pedestrian { .. } => self.spawn_entity(
                 &name,
                 &req.asset_key,
                 req.pose.as_ref(),
@@ -6923,6 +6923,7 @@ fn carla_trace_state(
         measured: true,
         // acb runs the ego's vehicle interface: no taken command here (092 K2.4)
         command: None,
+        cmd_frame: None,
     }
 }
 
