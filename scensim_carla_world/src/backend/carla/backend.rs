@@ -1204,6 +1204,10 @@ pub struct CarlaBackend {
     /// The weather before the scenario changed it (the road's look, its sky), put back at
     /// `Initialize`; a `set_weather` in between replaces it.
     weather_before_scenario: Option<Weather>,
+    /// The scenario has set a road condition since `Initialize` (086 C7): its look is the
+    /// road's from then on, a dry one too, not the weather's from before the scenario (whose
+    /// own wetness a dry condition would otherwise keep).
+    road_set: bool,
     /// The scenario's weather parts so far (`scenario_weather`).
     sky: Sky,
     /// The scenario's time of day, when it set one.
@@ -1405,6 +1409,7 @@ impl CarlaBackend {
             spec_cars: HashMap::new(),
             spawn_watch: Default::default(),
             weather_before_scenario: None,
+            road_set: false,
             sky: Sky::default(),
             scenario_clock: None,
             ssv2_time: 0.0,
@@ -1806,6 +1811,7 @@ impl CarlaBackend {
         let friction = road.map(|r| r.friction_factor != self.road.friction_factor);
         if let Some(road) = road {
             self.road = road;
+            self.road_set = true;
         }
         if let Err(e) = self.refresh_weather() {
             return failed(format!("UpdateEnvironment: {e:#}"));
@@ -1852,7 +1858,8 @@ impl CarlaBackend {
     /// it, the road's wet look, the scenario's sky and its sun (placed, or from the time of
     /// day). With none of them set, the weather from before.
     fn refresh_weather(&mut self) -> Result<()> {
-        let set = self.road.look != DRY_ROAD.look
+        let set = self.road_set
+            || self.road.look != DRY_ROAD.look
             || !self.sky.is_empty()
             || self.scenario_clock.is_some();
         if !set {
@@ -1872,7 +1879,7 @@ impl CarlaBackend {
             }
         };
         let mut w = base;
-        if self.road.look != DRY_ROAD.look {
+        if self.road_set || self.road.look != DRY_ROAD.look {
             w = road_condition::with_look(w, self.road.look);
         }
         let sun = self.scenario_clock.as_ref().map(|c| {
@@ -2075,6 +2082,7 @@ impl CarlaBackend {
     /// the weather goes back to what it was before the scenario changed it.
     fn reset_environment(&mut self) {
         self.road = DRY_ROAD;
+        self.road_set = false;
         self.own_friction.clear();
         self.sky = Sky::default();
         self.scenario_clock = None;
