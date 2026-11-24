@@ -1151,6 +1151,11 @@ pub struct CarlaBackend {
     /// and again after a world change). A world snapshot older than this is the client's
     /// stale cache: [`CarlaBackend::fresh_snapshot`] waits for it to catch up (roadmap 023).
     last_tick_frame: Option<u64>,
+    /// `CLOCK_MONOTONIC` ns just before the last `world.tick()` call and when it returned
+    /// (scensim issue 135 step 3), until [`CarlaBackend::take_tick_mono`] reads it. Taken on the
+    /// watchdog's helper thread around the call itself: the server begins the tick up to one RPC
+    /// send after the first stamp.
+    last_tick_mono: Option<(i64, i64)>,
     /// Snapshots read stale this episode (caught up or not), to keep their log lines few.
     stale_snapshots: u32,
     /// Tracked NPCs missing from the snapshot: warned once, failed only when all are, for
@@ -1381,6 +1386,7 @@ impl CarlaBackend {
             carla_unreachable: false,
             tick_time: Duration::ZERO,
             last_tick_frame: None,
+            last_tick_mono: None,
             stale_snapshots: 0,
             miss_watch: npc_tracking::MissWatch::default(),
             traffic_manager: None,
@@ -1591,6 +1597,13 @@ impl CarlaBackend {
     /// The CARLA frame of the last tick, when there was one in this world.
     pub fn last_tick_frame(&self) -> Option<u64> {
         self.last_tick_frame
+    }
+
+    /// The last tick's start and return, `CLOCK_MONOTONIC` ns, and forget them: (0, 0) when no
+    /// tick ran since the last read (scensim issue 135 step 3). With substeps, the last
+    /// substep's: the tick that ends at the frame the step reports.
+    pub fn take_tick_mono(&mut self) -> (i64, i64) {
+        self.last_tick_mono.take().unwrap_or((0, 0))
     }
 
     /// The map origin this backend applies (`<map dir>/carla/map_origin.yaml`).
@@ -3984,9 +3997,13 @@ impl CarlaBackend {
         let mut world = self.world.clone();
         let bound = self.bound(budgets::TICK_WATCHDOG);
         match self.watched("world.tick()", step, bound, move || {
-            world.tick_or_timeout(budgets::LIBCARLA_TICK_TIMEOUT)
+            let start = mono_ns();
+            let r = world.tick_or_timeout(budgets::LIBCARLA_TICK_TIMEOUT);
+            let ret = mono_ns();
+            r.map(|frame| (frame, start, ret))
         }) {
-            Ok(Ok(frame)) => {
+            Ok(Ok((frame, start, ret))) => {
+                self.last_tick_mono = Some((start, ret));
                 self.last_tick_frame = Some(frame);
                 self.collision_monitor.note_tick(frame);
                 Ok(frame)
@@ -7238,6 +7255,18 @@ fn release_needed(
         || actors
             .iter()
             .any(|&(id, parent)| parent == actor_id && Some(id) != own_sensor)
+}
+
+/// `CLOCK_MONOTONIC`, ns: the clock acb's apply trace reads, comparable between processes under
+/// one boot (scensim issue 135 step 3).
+fn mono_ns() -> i64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: a valid pointer to a timespec; CLOCK_MONOTONIC always exists on Linux.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec * 1_000_000_000 + ts.tv_nsec
 }
 
 #[cfg(test)]

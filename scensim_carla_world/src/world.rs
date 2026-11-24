@@ -758,6 +758,7 @@ impl World for CarlaWorld {
         let backend = self.backend()?;
         let result = backend.update_frame(req.current_simulation_time);
         let tick = backend.take_tick_time();
+        let (tick_start_mono_ns, tick_return_mono_ns) = backend.take_tick_mono();
         let ns = result.map_err(|e| refusal(e, backend))?;
         let frame = backend.last_tick_frame().unwrap_or(0);
         let episode_id = backend.episode_id();
@@ -836,6 +837,8 @@ impl World for CarlaWorld {
             tick_seconds: tick.as_secs_f64(),
             episode_id,
             command_counts,
+            tick_start_mono_ns,
+            tick_return_mono_ns,
         })
     }
 
