@@ -701,6 +701,8 @@ impl SpawnKind {
             Driver::Scenario => SpawnKind::Npc,
             Driver::SimulatorAutopilot => SpawnKind::AutopilotNpc,
             Driver::Agent => SpawnKind::AgentVehicle,
+            // posed kinematically, physics off, as a scenario NPC; its commands move it (K13)
+            Driver::Model => SpawnKind::Npc,
         }
     }
 }
@@ -3775,14 +3777,28 @@ impl CarlaBackend {
         }
     }
 
-    /// Make the spawned walker `name` a `COMMANDED` body (092 K12), at rest at `pose` (SSv2's
-    /// map frame). It was spawned kinematic, physics off.
+    /// Make the spawned walker or vehicle `name` a `COMMANDED` body (092 K12, K13), at rest at
+    /// `pose` (SSv2's map frame). It was spawned kinematic, physics off.
     pub fn command_entity(&mut self, name: &str, pose: &Pose) -> std::result::Result<(), String> {
         let actor_id = self
             .entities
             .get(name)
             .map(|e| e.carla_actor_id)
             .ok_or_else(|| format!("{name:?} is not spawned"))?;
+        if !self.walker_height.contains_key(&actor_id) {
+            // A vehicle: its origin above the bottom of its box, as a tracked NPC's, so that
+            // each step seats the box on the road under it (`walker_teleport_z`, which a
+            // walker's spawn set up already).
+            let actor = self
+                .world
+                .actor(actor_id)
+                .map_err(|e| format!("{name:?}: its actor: {e}"))?
+                .ok_or_else(|| format!("{name:?}: no actor {actor_id}"))?;
+            let bb = actor.bounding_box();
+            let lift = walker_lift(bb.transform.location.z, bb.extent.z);
+            self.walker_height
+                .insert(actor_id, WalkerHeight { lift, ground: None });
+        }
         let p = pose.position.unwrap_or_default();
         let q = pose.orientation.unwrap_or_default();
         let (_, _, yaw) = coordinate_conversion::quaternion_to_euler(q.x, q.y, q.z, q.w);

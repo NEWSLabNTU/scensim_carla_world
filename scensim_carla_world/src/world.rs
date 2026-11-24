@@ -460,6 +460,7 @@ impl World for CarlaWorld {
                     (wire::Kind::Ego, _) => Driver::Ego,
                     (_, wire::Motion::External) => Driver::Agent,
                     (_, wire::Motion::Autopilot) => Driver::SimulatorAutopilot,
+                    (_, wire::Motion::Commanded) => Driver::Model,
                     _ => Driver::Scenario,
                 },
                 subtype: subtype_of(&req.subtype),
@@ -476,11 +477,11 @@ impl World for CarlaWorld {
             _ => EntityKind::MiscObject,
         };
         if motion == wire::Motion::Commanded {
-            // Pedestrians first (092 K12, 133): a vehicle behaviour model is the next step.
-            if kind != wire::Kind::Pedestrian {
+            // Pedestrians (092 K12) and vehicles (K13); the ego is its pilot's, never a model's.
+            if !matches!(kind, wire::Kind::Pedestrian | wire::Kind::Vehicle) {
                 return Err(Refusal::new(format!(
-                    "{:?}: COMMANDED bodies are pedestrians here; a commanded {kind:?} is not \
-                     supported yet",
+                    "{:?}: COMMANDED bodies are pedestrians and vehicles here; a commanded \
+                     {kind:?} is not supported",
                     req.name
                 )));
             }
