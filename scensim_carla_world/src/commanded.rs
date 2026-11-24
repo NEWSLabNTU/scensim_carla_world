@@ -6,7 +6,8 @@
 //! toward the commanded speed by at most the limit times dt, the yaw is set to the heading, and
 //! the position moves `v dt` along it. The
 //! actor is then posed with physics off. CARLA reports a physics-off actor at 0 m/s, so what
-//! SSv2 is told (twist, acceleration, jerk) is this state, not CARLA's.
+//! SSv2 is told (twist, acceleration, jerk) and the step's states report (the velocity, scensim
+//! issue 160) are this state, not CARLA's.
 
 use crate::tick_gate::Command;
 
@@ -37,6 +38,12 @@ impl Body {
             jerk: 0.0,
             cmd_frame: 0,
         }
+    }
+
+    /// Its velocity in the map frame, m/s: the speed along the yaw. What the step's states
+    /// report for it (scensim issue 160), not CARLA's 0 for a teleported actor.
+    pub fn velocity(&self) -> [f64; 3] {
+        [self.v * self.yaw.cos(), self.v * self.yaw.sin(), 0.0]
     }
 
     /// One tick of `dt` seconds under `command`, which answered gate frame `frame`.

@@ -1524,6 +1524,7 @@ impl CarlaBackend {
                 let actor = snapshot.find(id)?;
                 let gap_trace::SimState { pose, velocity, .. } =
                     carla_trace_state(&actor, map_origin);
+                let velocity = state_velocity(velocity, self.commanded.get(&id).map(|(_, b)| b));
                 let control = control_of(id);
                 Some(ActorState {
                     name,
@@ -7084,6 +7085,13 @@ pub struct ActorState {
     pub control: Option<gap_trace::AppliedControl>,
 }
 
+/// The velocity a step's state reports for an actor whose measured one is `measured`: a
+/// `COMMANDED` body's is its integrator's (scensim issue 160). CARLA measures an actor posed
+/// with physics off at 0 m/s, so a model reading the truth saw its own car, or walker, at rest.
+fn state_velocity(measured: [f64; 3], commanded: Option<&crate::commanded::Body>) -> [f64; 3] {
+    commanded.map_or(measured, crate::commanded::Body::velocity)
+}
+
 /// The rule of [`CarlaBackend::reports_control`] (issue 135): the ego, and a vehicle that is
 /// tracked or driven by CARLA (autopilot, agent), unless it is posed (kinematic or commanded).
 fn reports_control(
@@ -8116,6 +8124,40 @@ mod tests {
         assert!(!reports_control(Ego, false, false, true)); // commanded
         assert!(!reports_control(Pedestrian, true, true, false));
         assert!(!reports_control(MiscObject, false, false, false));
+    }
+
+    /// Scensim issue 160: a commanded walker and a commanded car report the speed they were
+    /// commanded, along their heading, not the 0 m/s CARLA measures for a teleported actor;
+    /// any other actor reports what CARLA measured.
+    #[test]
+    fn a_commanded_body_reports_its_commanded_speed() {
+        use crate::commanded::Body;
+        use crate::tick_gate::Command;
+        let carla_zero = [0.0, 0.0, 0.0];
+        for (entity, speed, heading, limit) in [
+            ("walker", 1.4, 0.3, 1.0),
+            ("car", 8.0, std::f64::consts::PI, 4.0),
+        ] {
+            let command = Command {
+                entity: entity.into(),
+                speed,
+                heading,
+                accel_limit: limit,
+            };
+            let mut b = Body::at(10.0, -3.0, 0.0, 0.0);
+            for frame in 1..=100 {
+                b.step(&command, frame, 0.05);
+            }
+            let v = state_velocity(carla_zero, Some(&b));
+            assert!((v[0].hypot(v[1]) - speed).abs() < 1e-12, "{entity}: {v:?}");
+            assert!(
+                (v[1].atan2(v[0]) - heading).abs() < 1e-12,
+                "{entity}: {v:?}"
+            );
+            assert_eq!(v[2], 0.0);
+        }
+        let measured = [3.0, -1.0, 0.2];
+        assert_eq!(state_velocity(measured, None), measured);
     }
 
     #[test]
