@@ -47,8 +47,10 @@ pub fn applied(rc: &RoadCondition) -> Result<Applied, String> {
     let refused: Vec<&str> = rc.scensim_properties().map(|(k, _)| k.as_str()).collect();
     if !refused.is_empty() {
         problems.push(format!(
-            "the CARLA world server has no surface map: zones and other scensim properties are \
-             the Isaac world server's (refused: {})",
+            "CARLA 0.9.16 cannot apply surface zones: its friction trigger acts on every car of \
+             a blueprint, and a per-wheel physics apply steps the car 0.14 to 0.15 m/s (scensim \
+             roadmap 086 C7's P0 and P0b); zones and other scensim properties are the Isaac \
+             world server's (refused: {})",
             refused.join(", ")
         ));
     }
@@ -74,6 +76,49 @@ pub fn applied(rc: &RoadCondition) -> Result<Applied, String> {
         friction_factor: f * wet,
         look: (*wetness_look, *deposits),
     })
+}
+
+/// The world-wide road condition CARLA applies, read back (086 C7, `ROAD_CONDITION_APPLIED`):
+/// `factor` the cars' tyre friction over their own, `look` the weather's `wetness` and
+/// `precipitation_deposits`. The wetness is the level whose look the weather shows (within
+/// 0.5), the scale `factor` over that level's asphalt factor. A look that is no level's is
+/// refused, naming it.
+pub fn read_back(factor: f64, look: (f32, f32)) -> Result<(f64, String), String> {
+    let Some((level, _, _)) = WET_LOOK
+        .iter()
+        .find(|(_, w, d)| (w - look.0).abs() <= 0.5 && (d - look.1).abs() <= 0.5)
+    else {
+        return Err(format!(
+            "the weather's wetness {} and deposits {} are no wetness level's look",
+            look.0, look.1
+        ));
+    };
+    let wet = WET_FRICTION
+        .iter()
+        .find(|(w, _)| w == level)
+        .map(|(_, f)| *f)
+        .unwrap_or(1.0);
+    Ok((factor / wet, level.to_string()))
+}
+
+/// The factor every wheel of a car runs over its own tyre friction, or why they differ.
+pub fn wheel_factor(current: &[f32], own: &[f32]) -> Result<f64, String> {
+    if current.is_empty() || current.len() != own.len() {
+        return Err(format!(
+            "{} wheels read against {} own",
+            current.len(),
+            own.len()
+        ));
+    }
+    let f: Vec<f64> = current
+        .iter()
+        .zip(own)
+        .map(|(c, o)| f64::from(*c) / f64::from(*o))
+        .collect();
+    if f.iter().any(|x| (x - f[0]).abs() > 1e-3) {
+        return Err(format!("the wheels run different factors: {f:?}"));
+    }
+    Ok(f[0])
 }
 
 /// `weather` with the road's wet look.
@@ -126,10 +171,41 @@ mod tests {
             e.contains("scensim.zone.ford.water_depth, scensim.zone.pit.class"),
             "{e}"
         );
+        assert!(e.contains("CARLA 0.9.16 cannot apply surface zones"), "{e}");
+        assert!(e.contains("086 C7"), "{e}");
         assert!(e.contains("frictionScaleFactor -1"), "{e}");
         assert!(applied(&rc(1.0, "soaked", &[]))
             .unwrap_err()
             .contains("soaked"));
+    }
+
+    #[test]
+    fn the_read_back_inverts_the_apply_at_every_level() {
+        for (level, _) in WET_FRICTION {
+            for scale in [1.0, 0.8, 0.35] {
+                let a = applied(&rc(scale, level, &[])).unwrap();
+                // CARLA's tyre friction is f32: the factor as a car reads it back
+                let own = 3.5f32;
+                let factor = wheel_factor(&[own * a.friction_factor as f32; 4], &[own; 4]).unwrap();
+                let (s, w) = read_back(factor, a.look).unwrap();
+                assert!((s - scale).abs() < 1e-5, "{level} {scale}: {s}");
+                assert_eq!(w, *level);
+            }
+        }
+    }
+
+    #[test]
+    fn a_read_back_that_does_not_fit_is_refused() {
+        assert!(read_back(1.0, (55.0, 0.0))
+            .unwrap_err()
+            .contains("no wetness level"));
+        assert!(wheel_factor(&[3.5, 2.1, 3.5, 3.5], &[3.5; 4])
+            .unwrap_err()
+            .contains("different factors"));
+        assert!(wheel_factor(&[], &[]).is_err());
+        // a car whose friction was set by hand to another factor reads back that factor
+        let (s, _) = read_back(wheel_factor(&[2.8; 4], &[3.5; 4]).unwrap(), (0.0, 0.0)).unwrap();
+        assert!((s - 0.8).abs() < 1e-6);
     }
 
     /// The wet factors are asphalt's in the Isaac surface layer's class table, so one

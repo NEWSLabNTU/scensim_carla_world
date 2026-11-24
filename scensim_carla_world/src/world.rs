@@ -369,6 +369,8 @@ impl World for CarlaWorld {
             C::RoadCondition,
             C::Environment,
             C::EnvironmentApplied,
+            // 086 C7: the world-wide road condition read back; no ROAD_ZONES on 0.9.16
+            C::RoadConditionApplied,
         ];
         // COMMANDED bodies (092 K12): their commands arrive at the tick gate, so only with one.
         if !self.config.tick_gate.trim().is_empty() {
@@ -915,6 +917,21 @@ impl World for CarlaWorld {
         let backend = self.backend()?;
         let result = backend.update_environment(&env);
         result.map_err(|e| refusal(e, backend))
+    }
+
+    fn applied_road_condition(
+        &mut self,
+        _req: &wire::RoadCondition,
+    ) -> WorldResult<wire::RoadConditionReply> {
+        let backend = self.backend()?;
+        let result = backend.applied_road_condition();
+        result
+            .map(|(scale, wetness)| wire::RoadConditionReply {
+                friction_scale_factor: scale,
+                wetness,
+                zones: Default::default(),
+            })
+            .map_err(|e| refusal(e, backend))
     }
 
     fn applied_environment(&mut self) -> WorldResult<wire::ScenarioWeather> {

@@ -1711,6 +1711,69 @@ impl CarlaBackend {
         }
     }
 
+    /// The world-wide road condition CARLA applies now, read back (086 C7,
+    /// `ROAD_CONDITION_APPLIED`): the scale and wetness level from the ego's tyre friction over
+    /// its own (else another vehicle's the condition reached) and the weather's wet look. With
+    /// no vehicle the road has reached, the factor is the condition's own, said in the log.
+    pub fn applied_road_condition(&self) -> Result<(f64, String), BackendError> {
+        let now = match self.weather() {
+            Ok(w) => w,
+            Err(e) => return failed(format!("read the weather back: {e:#}")),
+        };
+        let look = (now.wetness, now.precipitation_deposits);
+        let mut cars: Vec<(String, u32, bool)> = self
+            .entities
+            .names()
+            .filter_map(|name| {
+                let e = self.entities.get(&name)?;
+                (matches!(e.entity_type, EntityType::Ego | EntityType::Vehicle)
+                    && self.own_friction.contains_key(&e.carla_actor_id))
+                .then(|| {
+                    let ego = e.entity_type == EntityType::Ego;
+                    (name.clone(), e.carla_actor_id, ego)
+                })
+            })
+            .collect();
+        cars.sort_by_key(|(name, _, ego)| (!*ego, name.clone()));
+        let factor = match cars.first() {
+            Some((name, id, _)) => {
+                let e_id = *id;
+                let own = &self.own_friction[&e_id];
+                let actor = match self.world.actor(e_id) {
+                    Ok(Some(a)) => a,
+                    Ok(None) => return failed(format!("'{name}': its actor is gone")),
+                    Err(err) => return failed(format!("'{name}': find its actor: {err}")),
+                };
+                let carla::client::ActorKind::Vehicle(vehicle) = actor.into_kinds() else {
+                    return failed(format!("'{name}': not a vehicle"));
+                };
+                let current = vehicle
+                    .physics_control()
+                    .map_err(|err| eyre::eyre!("{err}"))
+                    .and_then(|c| super::vehicle_physics::tire_frictions(&c));
+                match current {
+                    Ok(c) => match road_condition::wheel_factor(&c, own) {
+                        Ok(f) => f,
+                        Err(why) => return failed(format!("'{name}': {why}")),
+                    },
+                    Err(err) => return failed(format!("'{name}': read its physics: {err:#}")),
+                }
+            }
+            None => {
+                tracing::info!(
+                    "RoadCondition read-back: no vehicle the road has reached; the factor is \
+                     the condition's own ({:.3})",
+                    self.road.friction_factor
+                );
+                self.road.friction_factor
+            }
+        };
+        match road_condition::read_back(factor, look) {
+            Ok(r) => Ok(r),
+            Err(why) => failed(why),
+        }
+    }
+
     pub fn update_environment(&mut self, env: &Environment) -> Result<(), BackendError> {
         let mut problems = Vec::new();
         let road = match env.road_condition.as_ref().map(road_condition::applied) {
