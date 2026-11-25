@@ -371,6 +371,9 @@ impl World for CarlaWorld {
             C::EnvironmentApplied,
             // 086 C7: the world-wide road condition read back; no ROAD_ZONES on 0.9.16
             C::RoadConditionApplied,
+            // scensim issue 161: both read back again after the next step's tick (CARLA
+            // 0.9.16's set_weather is sent without waiting; a read right after may predate it)
+            C::ReadbackAfterStep,
         ];
         // COMMANDED bodies (092 K12): their commands arrive at the tick gate, so only with one.
         if !self.config.tick_gate.trim().is_empty() {
@@ -842,6 +845,9 @@ impl World for CarlaWorld {
             command_counts,
             tick_start_mono_ns,
             tick_return_mono_ns,
+            // the shell fills these after the tick (READBACK_AFTER_STEP, scensim issue 161)
+            environment_applied: None,
+            road_condition_applied: None,
         })
     }
 

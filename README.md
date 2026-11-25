@@ -78,6 +78,14 @@ The server keeps the weather asked for -- `weather:` in `scensim_carla_world.yam
 start), then the last `SetWeather` -- and applies it again after every world load and
 reconnect.
 
+A scenario's own weather (`SetEnvironment`, OpenSCENARIO's units) is checked against each
+field's range before CARLA sees it: an angle is in radians, so a sun elevation of 60, meant as
+degrees, is refused, saying `60 deg would be 1.0472 rad`. `SetWeather`'s fields above are
+CARLA's own and stay in degrees. The weather is read back as CARLA shows it, both right after the
+send and again after the next step's tick (`READBACK_AFTER_STEP`; CARLA 0.9.16 sends a weather
+change without waiting, so the first read can predate it). A sun altitude past a pole reads back
+as the sun on the other side: 3437.7 deg stored reads back as elevation -17.7 deg (-0.3097 rad).
+
 ## Spectator
 
 `spectator: follow | once | off` and `spectator_height` (m, default 50) in

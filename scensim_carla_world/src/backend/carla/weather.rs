@@ -407,6 +407,33 @@ mod tests {
         }
     }
 
+    /// scensim issue 161, the K9e case (133): CARLA's own parameters are degrees, so 60 for
+    /// `sun_altitude_angle` is taken as 60 deg; 60 as an OpenSCENARIO elevation (rad) is refused
+    /// by the shell (`scensim_core::world_server::environment_range_problems`).
+    #[test]
+    fn issue_161_60_deg_by_set_weather_is_taken_and_60_rad_by_set_environment_is_refused() {
+        let (_, now) = preset("ClearNoon").unwrap();
+        let p = [("sun_altitude_angle".to_string(), 60.0)];
+        let (_, w) = resolve(&WeatherRequest::Parameters(p.into_iter().collect()), now).unwrap();
+        assert_eq!(w.sun_altitude_angle, 60.0);
+        use crate::proto::scensim_world as wire;
+        use scensim_core::world_server::environment_range_problems;
+        let rad = |e: f64| wire::ScenarioWeather {
+            sun: Some(wire::scenario_weather::Sun {
+                azimuth: 0.0,
+                elevation: e,
+                illuminance: 0.0,
+            }),
+            ..Default::default()
+        };
+        let problems = environment_range_problems(&rad(60.0));
+        assert_eq!(
+            problems,
+            vec!["sun_elevation 60 rad is outside [-1.5708, 1.5708] rad (60 deg would be 1.0472 rad)"]
+        );
+        assert!(environment_range_problems(&rad(60f64.to_radians())).is_empty());
+    }
+
     #[test]
     fn a_request_resolves_on_top_of_carlas_weather() {
         let (_, now) = preset("DustStorm").unwrap();

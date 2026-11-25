@@ -119,12 +119,21 @@ impl Sky {
 }
 
 /// CARLA's sun angles (deg) as OpenSCENARIO's (rad: azimuth clockwise from north, elevation):
-/// `carla_sun` backwards.
+/// `carla_sun` backwards, for the sun CARLA shows (scensim issue 161). CARLA keeps any altitude
+/// it is given; one past a pole is the sun on the other side, so the altitude is folded into
+/// [-90, 90] deg and the azimuth turned by 180 deg when the fold crosses a pole. 092 K9e's 60
+/// rad (3437.7 deg stored) reads back as -0.3097 rad, as Isaac showed it, not as 60 rad.
 pub fn scenario_sun(azimuth: f32, altitude: f32) -> (f64, f64) {
-    (
-        (f64::from(azimuth) + 90.0).rem_euclid(360.0).to_radians(),
-        f64::from(altitude).to_radians(),
-    )
+    let mut alt = (f64::from(altitude) + 180.0).rem_euclid(360.0) - 180.0;
+    let mut az = f64::from(azimuth);
+    if alt > 90.0 {
+        alt = 180.0 - alt;
+        az += 180.0;
+    } else if alt < -90.0 {
+        alt = -180.0 - alt;
+        az += 180.0;
+    }
+    ((az + 90.0).rem_euclid(360.0).to_radians(), alt.to_radians())
 }
 
 /// An OpenSCENARIO sun (rad: azimuth clockwise from north, elevation) as CARLA's angles, deg.
@@ -249,6 +258,37 @@ mod tests {
         // North is 270 from east, east 0.
         assert!((carla_sun(0.0, 0.0).0 - 270.0).abs() < 1e-3);
         assert!(carla_sun(std::f64::consts::FRAC_PI_2, 0.0).0.abs() < 1e-3);
+    }
+
+    #[test]
+    fn issue_161_the_sun_reads_back_as_carla_shows_it() {
+        use std::f64::consts::FRAC_PI_2;
+        // 092 K9e: 60 rad sent as an elevation, stored by CARLA as 3437.7 deg
+        let stored = carla_sun(0.3, 60.0);
+        assert!((stored.1 - 3437.747).abs() < 1e-2, "{stored:?}");
+        let (az, el) = scenario_sun(stored.0, stored.1);
+        assert!((el - -0.3097).abs() < 1e-3, "{el}");
+        // the fold crosses a pole: the sun is on the other side
+        let turned = (0.3 + std::f64::consts::PI).rem_euclid(2.0 * std::f64::consts::PI);
+        assert!((az - turned).abs() < 1e-3, "{az} {turned}");
+        // in range: as before, both ways, and the poles themselves
+        for (a, e) in [
+            (0.3, 0.5),
+            (4.0, -1.2),
+            (1.0, FRAC_PI_2),
+            (2.0, -FRAC_PI_2),
+            (0.0, 0.0),
+        ] {
+            let (c_az, c_alt) = carla_sun(a, e);
+            let (b_az, b_el) = scenario_sun(c_az, c_alt);
+            assert!((b_el - e).abs() < 1e-4, "{e} -> {b_el}");
+            if e.abs() < 1.5 {
+                assert!((b_az - a).abs() < 1e-4, "{a} -> {b_az}");
+            }
+        }
+        // altitude 100 deg: elevation 80 deg on the other side
+        let (az, el) = scenario_sun(0.0, 100.0);
+        assert!((el.to_degrees() - 80.0).abs() < 1e-4 && (az.to_degrees() - 270.0).abs() < 1e-4);
     }
 
     #[test]
