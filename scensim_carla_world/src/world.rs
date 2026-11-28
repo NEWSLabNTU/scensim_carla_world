@@ -374,6 +374,8 @@ impl World for CarlaWorld {
             // scensim issue 161: both read back again after the next step's tick (CARLA
             // 0.9.16's set_weather is sent without waiting; a read right after may predate it)
             C::ReadbackAfterStep,
+            // scensim issue 204: a car or a COMMANDED body starts at its scenario's speed
+            C::InitialSpeed,
         ];
         // COMMANDED bodies (092 K12): their commands arrive at the tick gate, so only with one.
         if !self.config.tick_gate.trim().is_empty() {
@@ -892,6 +894,20 @@ impl World for CarlaWorld {
         };
         let backend = self.backend()?;
         let result = backend.update_entity_goal(&name, &goal);
+        result.map_err(|e| refusal(e, backend))
+    }
+
+    fn initial_speed_taken(&mut self, handle: u32, speed: f64) -> WorldResult<()> {
+        let name = self.name(handle)?;
+        let backend = self.backend()?;
+        let result = backend.take_initial_speed(&name, speed);
+        result.map_err(|e| refusal(e, backend))
+    }
+
+    fn set_initial_speed(&mut self, handle: u32, speed: f64) -> WorldResult<()> {
+        let name = self.name(handle)?;
+        let backend = self.backend()?;
+        let result = backend.set_initial_speed(&name, speed);
         result.map_err(|e| refusal(e, backend))
     }
 

@@ -86,6 +86,27 @@ send and again after the next step's tick (`READBACK_AFTER_STEP`; CARLA 0.9.16 s
 change without waiting, so the first read can predate it). A sun altitude past a pole reads back
 as the sun on the other side: 3437.7 deg stored reads back as elevation -17.7 deg (-0.3097 rad).
 
+## Start speeds
+
+`INITIAL_SPEED` (scensim issue 204): an entity whose Init SpeedAction gives it a speed starts at
+it, not at rest. A `COMMANDED` body's integrator starts there. A car CARLA's physics moves (the
+ego, an agent's or the autopilot's) is parked at its spawn (full brake and hand brake), so:
+
+- when the bridge gives the speed, before the start, the car leaves its park, once it has
+  settled from its 0.3 m spawn drop (0.5 s), and stands still on its own: released cars held
+  within 4 mm over 5 s up to 6.6 deg of pitch on Town03's hill. One steeper than 7 deg is
+  refused by name;
+- at the start, it gets the speed along its forward vector, raised by the share its wheels take
+  as they spin up from rest (k = n m_w / 2 / (M + n m_w / 2), from its own wheel count and mass,
+  with PhysX's 20 kg wheels; 0.0212 for the Model 3), so it reads the speed once they turn;
+  the log names the speed set and k;
+- PhysX lets the brakes go over about 0.1 s, so a start less than that after the release is
+  refused by name, as is one before the car has settled. An ego that waits for its engagement
+  has seconds.
+
+Measured with the conformance check: on Town01 the start frame reads 4.999 and 9.998 m/s,
+4.979 and 9.948 m/s 1 s later with no command.
+
 ## Spectator
 
 `spectator: follow | once | off` and `spectator_height` (m, default 50) in

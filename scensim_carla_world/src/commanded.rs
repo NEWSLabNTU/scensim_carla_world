@@ -40,6 +40,18 @@ impl Body {
         }
     }
 
+    /// Start at `v` m/s along its yaw (scensim issue 204), not at rest.
+    pub fn start_at(&mut self, v: f64) {
+        self.v = v;
+    }
+
+    /// A tick of `dt` seconds with no command yet: it holds its speed along its yaw (at rest,
+    /// it stands where it spawned).
+    pub fn coast(&mut self, dt: f64) {
+        self.x += self.v * self.yaw.cos() * dt;
+        self.y += self.v * self.yaw.sin() * dt;
+    }
+
     /// Its velocity in the map frame, m/s: the speed along the yaw. What the step's states
     /// report for it (scensim issue 160), not CARLA's 0 for a teleported actor.
     pub fn velocity(&self) -> [f64; 3] {
@@ -98,6 +110,34 @@ mod tests {
             assert_eq!((b.x, b.y, b.v, b.yaw), (x, y, v, c.heading), "step {k}");
             assert_eq!(b.cmd_frame, 100 + k as u64);
         }
+    }
+
+    /// scensim issue 204: a body given a start speed is at it, along its yaw, before any
+    /// command: it holds that speed until the model's first command (a body at rest stands).
+    #[test]
+    fn a_start_speed_holds_until_the_first_command() {
+        let mut b = Body::at(10.0, -3.0, 0.0, 0.5);
+        b.start_at(6.0);
+        assert_eq!(b.v, 6.0);
+        assert_eq!(b.velocity(), [6.0 * 0.5f64.cos(), 6.0 * 0.5f64.sin(), 0.0]);
+        b.coast(0.05);
+        assert!((b.x - (10.0 + 6.0 * 0.5f64.cos() * 0.05)).abs() < 1e-12);
+        assert!((b.y - (-3.0 + 6.0 * 0.5f64.sin() * 0.05)).abs() < 1e-12);
+        assert_eq!((b.v, b.cmd_frame), (6.0, 0));
+        let mut rest = Body::at(1.0, 2.0, 0.0, 0.0);
+        rest.coast(0.05);
+        assert_eq!((rest.x, rest.y), (1.0, 2.0));
+    }
+
+    /// The batch's law from a start speed: the first command's acceleration limit counts from
+    /// it, not from rest.
+    #[test]
+    fn the_law_starts_from_the_start_speed() {
+        let mut b = Body::at(0.0, 0.0, 0.0, 0.0);
+        b.start_at(6.0);
+        b.step(&cmd(6.0, 0.0, 1.0), 1, 0.05);
+        assert_eq!(b.v, 6.0);
+        assert!((b.x - 0.3).abs() < 1e-12);
     }
 
     /// 092 K12's exit check 1: the batch's law (`scensim_batch.core.model_law`, which wrote

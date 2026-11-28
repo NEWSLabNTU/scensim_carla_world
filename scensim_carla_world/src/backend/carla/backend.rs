@@ -726,6 +726,18 @@ fn agent_role_conflict(entity: &str, ego_role: &str) -> Option<String> {
     None
 }
 
+/// No throttle, no brake: how a car given a start speed (scensim issue 204) leaves its park and
+/// coasts until its driver's first command, which replaces it.
+const START_CONTROL: carla::rpc::VehicleControl = carla::rpc::VehicleControl {
+    throttle: 0.0,
+    steer: 0.0,
+    brake: 0.0,
+    hand_brake: false,
+    reverse: false,
+    manual_gear_shift: false,
+    gear: 0,
+};
+
 /// Spacing of the points sampled along each lane for the lane graph [m].
 const LANE_SAMPLE_M: f64 = 2.0;
 
@@ -1064,6 +1076,18 @@ pub struct CarlaBackend {
     /// entity sanity bounds ([-5, 3] m/s²) treat as a scenario-fatal error. The spike
     /// is a spawn artifact, not vehicle behaviour.
     settle_frames: HashMap<u32, u32>,
+    /// Cars released from their park for a start speed (scensim issue 204): the step count at
+    /// their release.
+    released: HashMap<u32, u64>,
+    /// Cars given a start speed while still settling from their spawn: released once settled,
+    /// by `release_settled` after each step.
+    pending_release: HashSet<u32>,
+    /// Why a pending car could not be released when it settled, for its start to say.
+    release_refused: HashMap<u32, String>,
+    /// The step count at each physics car's spawn.
+    spawned_step: HashMap<u32, u64>,
+    /// SSv2 steps run since this backend began.
+    steps_run: u64,
     /// Recent raw acceleration samples per actor, for the reporting-side smoothing
     /// (see ACCEL_SMOOTHING_FRAMES).
     accel_history: HashMap<u32, VecDeque<(f64, f64, f64)>>,
@@ -1347,6 +1371,11 @@ impl CarlaBackend {
             consecutive_carla_failures: 0,
             previous_longitudinal_accel: HashMap::new(),
             settle_frames: HashMap::new(),
+            released: HashMap::new(),
+            pending_release: HashSet::new(),
+            release_refused: HashMap::new(),
+            spawned_step: HashMap::new(),
+            steps_run: 0,
             accel_history: HashMap::new(),
             walker_height: HashMap::new(),
             tracked_npcs: HashMap::new(),
@@ -2139,6 +2168,10 @@ impl CarlaBackend {
     fn forget_actor_samples(&mut self, actor_id: u32) {
         self.previous_longitudinal_accel.remove(&actor_id);
         self.settle_frames.remove(&actor_id);
+        self.released.remove(&actor_id);
+        self.pending_release.remove(&actor_id);
+        self.release_refused.remove(&actor_id);
+        self.spawned_step.remove(&actor_id);
         self.accel_history.remove(&actor_id);
         self.walker_height.remove(&actor_id);
         self.body_boxes.remove(&actor_id);
@@ -2780,6 +2813,10 @@ impl CarlaBackend {
             self.spawned_actors.clear();
             self.previous_longitudinal_accel.clear();
             self.settle_frames.clear();
+            self.released.clear();
+            self.pending_release.clear();
+            self.release_refused.clear();
+            self.spawned_step.clear();
             self.accel_history.clear();
             self.walker_height.clear();
             self.body_boxes.clear();
@@ -3542,6 +3579,7 @@ impl CarlaBackend {
         self.abandon_collision_monitor();
         self.previous_longitudinal_accel.clear();
         self.settle_frames.clear();
+        self.released.clear();
         self.accel_history.clear();
         self.walker_height.clear();
         self.body_boxes.clear();
@@ -3641,6 +3679,7 @@ impl CarlaBackend {
         // would report a spurious spike on the first frame.
         self.previous_longitudinal_accel.clear();
         self.settle_frames.clear();
+        self.released.clear();
         self.accel_history.clear();
         self.walker_height.clear();
         self.body_boxes.clear();
@@ -3930,10 +3969,12 @@ impl CarlaBackend {
         }
         let mut poses = Vec::with_capacity(self.commanded.len());
         for (&actor_id, (name, body)) in self.commanded.iter_mut() {
-            let Some(c) = commands.get(name.as_str()) else {
-                continue;
-            };
-            body.step(&c.command, c.frame, dt);
+            match commands.get(name.as_str()) {
+                Some(c) => body.step(&c.command, c.frame, dt),
+                // no command yet: at rest it stands; given a start speed it holds it (204)
+                None if body.v != 0.0 => body.coast(dt),
+                None => continue,
+            }
             let (qx, qy, qz, qw) = coordinate_conversion::euler_to_quaternion(0.0, 0.0, body.yaw);
             let pose = Pose {
                 position: Some(geometry_msgs::Point {
@@ -4062,6 +4103,8 @@ impl CarlaBackend {
         for _ in 0..substeps {
             tick(self)?;
         }
+        self.steps_run += 1;
+        self.release_settled();
         let ended_on = self.last_tick_frame;
         if let Some(g) = self.tick_gate.as_mut() {
             g.after_step(ended_on);
@@ -4737,6 +4780,7 @@ impl CarlaBackend {
             // its suspension in the first ticks; report zero acceleration while it
             // settles so the impact spike is not read as vehicle behaviour.
             self.settle_frames.insert(actor_id, SETTLE_FRAMES);
+            self.spawned_step.insert(actor_id, self.steps_run);
 
             // Park it until its driver takes over. A fresh physics vehicle free-rolls
             // (observed ~1 m/s while Autoware initializes), and the first stop command
@@ -5861,6 +5905,211 @@ impl CarlaBackend {
 
     /// Point a simulator-driven entity at a new goal, route or target speed
     /// (`UpdateEntityGoal`, sent by the SSv2 fork for `simulator_autopilot` entities).
+    /// `INITIAL_SPEED`, when the shell takes a start speed (before the start; scensim issue
+    /// 204): a car CARLA's physics moves leaves its park (START_CONTROL), since its brakes take
+    /// BRAKE_RELEASE_S to let go, and stands still on its own until the start: now when it has
+    /// settled from its spawn, else once it has (`release_settled`), since one released in the
+    /// air lands unbraked and rolls on a grade. A car on a grade steeper than
+    /// MAX_RELEASE_GRADE_DEG is refused. A `COMMANDED` body needs nothing.
+    pub fn take_initial_speed(&mut self, name: &str, speed: f64) -> Result<(), BackendError> {
+        let Some(entity) = self.entities.get(name) else {
+            return failed(format!("SetInitialSpeed: entity '{name}' not found"));
+        };
+        let id = entity.carla_actor_id;
+        if self.commanded.contains_key(&id) {
+            return Ok(());
+        }
+        let since = self
+            .spawned_step
+            .get(&id)
+            .map_or(u64::MAX, |at| self.steps_run.saturating_sub(*at));
+        if !settled_from_spawn(since, self.step_time) {
+            self.pending_release.insert(id);
+            tracing::info!(
+                "'{name}' leaves its park for its start speed {speed} m/s once settled from its \
+                 spawn ({since} step(s) ago; scensim issue 204)"
+            );
+            return Ok(());
+        }
+        match self.release(id) {
+            Err(e) => failed(format!("SetInitialSpeed for '{name}': {e:#}")),
+            Ok(Some(why)) => failed(format!("SetInitialSpeed {speed} m/s for '{name}': {why}")),
+            Ok(None) => {
+                tracing::info!(
+                    "'{name}' leaves its park for its start speed {speed} m/s, at step {} \
+                     (scensim issue 204)",
+                    self.steps_run
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// After each step: the cars waiting to settle from their spawn (`take_initial_speed`) that
+    /// have, released; one that cannot be keeps its park and its reason for its start.
+    fn release_settled(&mut self) {
+        if self.pending_release.is_empty() {
+            return;
+        }
+        let ready: Vec<u32> = self
+            .pending_release
+            .iter()
+            .copied()
+            .filter(|id| {
+                let since = self
+                    .spawned_step
+                    .get(id)
+                    .map_or(u64::MAX, |at| self.steps_run.saturating_sub(*at));
+                settled_from_spawn(since, self.step_time)
+            })
+            .collect();
+        for id in ready {
+            self.pending_release.remove(&id);
+            match self.release(id) {
+                Ok(None) => tracing::info!(
+                    "actor {id} leaves its park for its start speed, settled, at step {} \
+                     (scensim issue 204)",
+                    self.steps_run
+                ),
+                Ok(Some(why)) => {
+                    tracing::warn!("actor {id} keeps its park: {why}");
+                    self.release_refused.insert(id, why);
+                }
+                Err(e) => {
+                    let why = format!("{e:#}");
+                    tracing::warn!("actor {id} keeps its park: {why}");
+                    self.release_refused.insert(id, why);
+                }
+            }
+        }
+    }
+
+    /// Release a settled car from its park for its start speed: `Some(why)` when its grade
+    /// forbids it (it keeps its park).
+    fn release(&mut self, id: u32) -> eyre::Result<Option<String>> {
+        let actor = self
+            .world
+            .actor(id)
+            .wrap_err("find the actor")?
+            .ok_or_else(|| eyre::eyre!("actor {id} is gone"))?;
+        let t = actor
+            .transform()
+            .map_err(|e| eyre::eyre!("read its transform: {e}"))?;
+        if let Some(why) = grade_refusal(f64::from(t.rotation.pitch), f64::from(t.rotation.roll)) {
+            return Ok(Some(why));
+        }
+        if matches!(actor.into_kinds(), carla::client::ActorKind::Vehicle(_)) {
+            // One synchronous batch: the asynchronous apply_control was not taken (the spawn's
+            // park still held on every frame after it, CARLA 0.9.16)
+            let client = std::sync::Arc::get_mut(&mut self.client).ok_or_else(|| {
+                eyre::eyre!("the CARLA client is held by a call that never returned")
+            })?;
+            let replies = client
+                .apply_batch_sync(
+                    vec![carla::rpc::Command::ApplyVehicleControl {
+                        actor_id: id,
+                        control: START_CONTROL,
+                    }],
+                    false,
+                )
+                .map_err(|e| eyre::eyre!("release its park: {e}"))?;
+            if let Some(e) = replies.first().and_then(|r| r.error()) {
+                eyre::bail!("release its park: {e}");
+            }
+        }
+        self.released.insert(id, self.steps_run);
+        Ok(None)
+    }
+
+    /// `INITIAL_SPEED`, right before the entity's start step (scensim issue 204): a `COMMANDED`
+    /// body's integrator starts at `speed`; a car CARLA's physics moves, released from its park
+    /// at least BRAKE_RELEASE_S before, gets `speed / (1 - k)` along its forward vector, its spin
+    /// zeroed, where k is the share its wheels take as they spin up (wheel_share, from its own
+    /// physics control), so it is at `speed` once they turn with it.
+    pub fn set_initial_speed(&mut self, name: &str, speed: f64) -> Result<(), BackendError> {
+        let Some(entity) = self.entities.get(name) else {
+            return failed(format!("SetInitialSpeed: entity '{name}' not found"));
+        };
+        let id = entity.carla_actor_id;
+        if let Some((_, body)) = self.commanded.get_mut(&id) {
+            body.start_at(speed);
+            tracing::info!("'{name}' starts at {speed} m/s (COMMANDED, scensim issue 204)");
+            return Ok(());
+        }
+        if self.pending_release.remove(&id) {
+            return failed(format!(
+                "SetInitialSpeed {speed} m/s for '{name}': SSv2 started it before it settled \
+                 from its spawn ({SPAWN_SETTLE_S} s), so it never left its park (scensim issue \
+                 204)"
+            ));
+        }
+        if let Some(why) = self.release_refused.remove(&id) {
+            return failed(format!("SetInitialSpeed {speed} m/s for '{name}': {why}"));
+        }
+        let lead = self
+            .released
+            .remove(&id)
+            .map(|at| self.steps_run.saturating_sub(at));
+        let step_time = self.step_time;
+        match lead {
+            None => {
+                return failed(format!(
+                    "SetInitialSpeed for '{name}': it was never released from its park"
+                ))
+            }
+            Some(n) if !release_lead_enough(n, step_time) => {
+                return failed(format!(
+                    "SetInitialSpeed {speed} m/s for '{name}': SSv2 started it {n} step(s) of \
+                     {step_time} s after it gave the speed; a parked car's brakes take \
+                     {BRAKE_RELEASE_S} s to let go, so it would start {} (scensim issue 204)",
+                    "slower than the speed"
+                ))
+            }
+            Some(_) => {}
+        }
+        let lead = lead.unwrap_or(0);
+        let outcome = (|| -> eyre::Result<(f64, f32)> {
+            let actor = self
+                .world
+                .actor(id)
+                .wrap_err("find the actor")?
+                .ok_or_else(|| eyre::eyre!("actor {id} is gone"))?;
+            let t = actor
+                .transform()
+                .map_err(|e| eyre::eyre!("read its transform: {e}"))?;
+            let k = match actor.clone().into_kinds() {
+                carla::client::ActorKind::Vehicle(vehicle) => {
+                    let pc = vehicle.physics_control().wrap_err("read its physics")?;
+                    wheel_share(pc.wheels.len(), f64::from(pc.mass))
+                }
+                _ => 0.0,
+            };
+            let v = start_velocity((speed / (1.0 - k)) as f32, t.rotation.yaw, t.rotation.pitch);
+            actor
+                .set_target_velocity(&v)
+                .wrap_err("set_target_velocity")?;
+            actor
+                .set_target_angular_velocity(&carla::geom::Vector3D {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                })
+                .wrap_err("set_target_angular_velocity")?;
+            Ok((k, t.rotation.yaw))
+        })();
+        match outcome {
+            Err(e) => failed(format!("SetInitialSpeed for '{name}': {e:#}")),
+            Ok((k, yaw)) => {
+                tracing::info!(
+                    "'{name}' starts at {speed} m/s along yaw {yaw:.1} deg, {lead} step(s) after \
+                     its release: set {:.3} m/s, its wheels' share k = {k:.4} (scensim issue 204)",
+                    speed / (1.0 - k)
+                );
+                Ok(())
+            }
+        }
+    }
+
     pub fn update_entity_goal(&mut self, name: &str, req: &Goal) -> Result<(), BackendError> {
         let name = name.to_string();
         if self.agent_vehicles.contains(&name) {
@@ -7159,6 +7408,72 @@ pub struct ActorState {
 /// The velocity a step's state reports for an actor whose measured one is `measured`: a
 /// `COMMANDED` body's is its integrator's (scensim issue 160). CARLA measures an actor posed
 /// with physics off at 0 m/s, so a model reading the truth saw its own car, or walker, at rest.
+/// PhysX's wheel mass in UE 4.26 (`UVehicleWheel::Mass`), kg; CARLA 0.9.16 does not expose it.
+/// A wheel's moment of inertia is m r^2 / 2, so its share of the car's momentum at speed is m/2
+/// whatever its radius.
+const PHYSX_WHEEL_MASS_KG: f64 = 20.0;
+
+/// The steepest pitch or roll at which a car released from its park holds its pose before the
+/// start, by measurement: on Town03's hill (road 3.3 deg) a settled Model 3 released at 4.1, 4.7,
+/// 5.7 and 6.6 deg pitch moved 1.5, 2.8, 3.1 and 0.8 mm in 5 s; ten gentler Town03 spawns at most
+/// 3.7 mm (CARLA 0.9.16, scensim issue 204). Steeper is unmeasured, so refused.
+const MAX_RELEASE_GRADE_DEG: f64 = 7.0;
+
+/// How long CARLA 0.9.16's PhysX takes to let a parked car's brakes go: two 0.05 s frames,
+/// measured (10 m/s read 8.64 and 7.29 on them, then coasted at 7.13).
+const BRAKE_RELEASE_S: f64 = 0.1;
+
+/// How long after its spawn a car has landed from its SPAWN_CLEARANCE drop and stopped
+/// bouncing, s: 0.35 s measured (Town01, Town03), with a margin.
+const SPAWN_SETTLE_S: f64 = 0.5;
+
+/// Whether a car `steps` steps of `step_time` s after its spawn has settled (SPAWN_SETTLE_S).
+fn settled_from_spawn(steps: u64, step_time: f64) -> bool {
+    steps as f64 * step_time >= SPAWN_SETTLE_S - 1e-9
+}
+
+/// The share of a start speed a car's `wheels` take as they spin up from rest, for a car of
+/// `mass` kg: each takes m/2 of momentum per m/s (PHYSX_WHEEL_MASS_KG).
+fn wheel_share(wheels: usize, mass: f64) -> f64 {
+    let w = wheels as f64 * PHYSX_WHEEL_MASS_KG / 2.0;
+    if w == 0.0 {
+        0.0
+    } else {
+        w / (mass + w)
+    }
+}
+
+/// Why a car at this pitch and roll (deg) may not be released before its start, if it may not.
+fn grade_refusal(pitch_deg: f64, roll_deg: f64) -> Option<String> {
+    let steep = |what: &str, deg: f64| {
+        (deg.abs() > MAX_RELEASE_GRADE_DEG).then(|| {
+            format!(
+                "it stands at {what} {deg:.1} deg, steeper than the {MAX_RELEASE_GRADE_DEG} deg up \
+                 to which a car released from its brakes was measured to hold still before its \
+                 start (scensim issue 204)"
+            )
+        })
+    };
+    steep("pitch", pitch_deg).or_else(|| steep("roll", roll_deg))
+}
+
+/// Whether `steps` steps of `step_time` s since a car's release are enough for its brakes to
+/// have let go (BRAKE_RELEASE_S).
+fn release_lead_enough(steps: u64, step_time: f64) -> bool {
+    steps as f64 * step_time >= BRAKE_RELEASE_S - 1e-9
+}
+
+/// A start speed (scensim issue 204) along an actor's forward vector, in CARLA's frame: `yaw`
+/// and `pitch` in degrees as CARLA's rotation has them (pitch positive nose up).
+fn start_velocity(speed: f32, yaw_deg: f32, pitch_deg: f32) -> carla::geom::Vector3D {
+    let (yaw, pitch) = (yaw_deg.to_radians(), pitch_deg.to_radians());
+    carla::geom::Vector3D {
+        x: speed * yaw.cos() * pitch.cos(),
+        y: speed * yaw.sin() * pitch.cos(),
+        z: speed * pitch.sin(),
+    }
+}
+
 fn state_velocity(measured: [f64; 3], commanded: Option<&crate::commanded::Body>) -> [f64; 3] {
     commanded.map_or(measured, crate::commanded::Body::velocity)
 }
@@ -7367,6 +7682,101 @@ fn mono_ns() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// scensim issue 204: a car given a start speed is released from its park (the spawn's
+    /// full brake and hand brake, PARKED_CONTROL) to coast, or it brakes to rest within 0.5 s
+    /// before its driver's first command (measured on CARLA 0.9.16: 10 m/s to 0 in 7 frames).
+    #[test]
+    fn a_car_given_a_start_speed_coasts_off_its_park() {
+        let (c, parked) = (START_CONTROL, PARKED_CONTROL);
+        assert_eq!((c.throttle, c.brake, c.steer), (0.0, 0.0, 0.0));
+        assert_eq!(
+            (c.hand_brake, c.reverse, c.manual_gear_shift),
+            (false, false, false)
+        );
+        assert_eq!((parked.hand_brake, parked.brake), (true, 1.0));
+    }
+
+    /// scensim issue 204: the share of a start speed the wheels take as they spin up, from the
+    /// car's own wheel count and mass: CARLA 0.9.16's Model 3 (1845 kg, 4 wheels) measured
+    /// 0.021 to 0.022 (10 m/s read 9.79, 5 m/s 4.89).
+    #[test]
+    fn the_wheels_share_comes_from_the_cars_wheel_count_and_mass() {
+        let k = wheel_share(4, 1845.0);
+        assert!((k - 40.0 / 1885.0).abs() < 1e-9, "{k}");
+        assert!((0.021..0.022).contains(&k));
+        assert!(
+            wheel_share(4, 900.0) > k,
+            "a lighter car gives its wheels more"
+        );
+        assert!(wheel_share(6, 1845.0) > k);
+        assert_eq!(wheel_share(0, 1845.0), 0.0);
+    }
+
+    /// A released car holds on a grade up to the steepest measured (Town03: 6.6 deg, 0.8 mm in
+    /// 5 s); beyond the limit the start speed is refused, naming it.
+    #[test]
+    fn a_car_steeper_than_the_measured_grade_is_refused() {
+        assert!(grade_refusal(6.63, 0.3).is_none());
+        assert!(grade_refusal(-4.4, 0.0).is_none());
+        let why = grade_refusal(8.0, 0.0).expect("refused");
+        assert!(
+            why.contains("pitch 8.0 deg") && why.contains("7 deg"),
+            "{why}"
+        );
+        assert!(grade_refusal(0.0, -7.2)
+            .expect("refused")
+            .contains("roll -7.2 deg"));
+    }
+
+    /// A car is released for its start speed only once it has landed from its spawn drop: on a
+    /// grade, one released in the air lands unbraked and rolls (Town03's 3.3 deg spawn: 0.84 m/s
+    /// and 0.15 m over the frames before the start).
+    #[test]
+    fn a_car_is_released_only_once_settled_from_its_spawn() {
+        assert!(!settled_from_spawn(1, 0.05));
+        assert!(!settled_from_spawn(9, 0.05));
+        assert!(settled_from_spawn(10, 0.05));
+        assert!(settled_from_spawn(15, 1.0 / 30.0));
+        assert!(!settled_from_spawn(14, 1.0 / 30.0));
+    }
+
+    /// The brakes let a parked car go over about 0.1 s (two 0.05 s frames, measured); a start
+    /// with less lead after the release is refused.
+    #[test]
+    fn a_start_needs_the_brakes_release_time_of_lead() {
+        assert!(release_lead_enough(2, 0.05));
+        assert!(release_lead_enough(3, 1.0 / 30.0));
+        assert!(!release_lead_enough(1, 0.05));
+        assert!(!release_lead_enough(2, 1.0 / 30.0));
+        assert!(!release_lead_enough(0, 0.05));
+    }
+
+    /// scensim issue 204: a start speed along the actor's heading, in CARLA's frame (its forward
+    /// vector: yaw about z, pitch nose up), with no vertical part for a level car.
+    #[test]
+    fn a_start_velocity_is_along_the_actors_forward_vector() {
+        let v = start_velocity(10.0, 0.0, 0.0);
+        assert_eq!((v.x, v.y, v.z), (10.0, 0.0, 0.0));
+        let v = start_velocity(10.0, 90.0, 0.0);
+        assert!(
+            v.x.abs() < 1e-5 && (v.y - 10.0).abs() < 1e-5 && v.z == 0.0,
+            "{v:?}"
+        );
+        let v = start_velocity(5.0, -30.0, 10.0);
+        let (c, s) = (10f32.to_radians().cos(), 10f32.to_radians().sin());
+        assert!(
+            (v.x - 5.0 * (-30f32).to_radians().cos() * c).abs() < 1e-5,
+            "{v:?}"
+        );
+        assert!(
+            (v.y - 5.0 * (-30f32).to_radians().sin() * c).abs() < 1e-5,
+            "{v:?}"
+        );
+        assert!((v.z - 5.0 * s).abs() < 1e-5, "{v:?}");
+        let n = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+        assert!((n - 5.0).abs() < 1e-5);
+    }
 
     #[test]
     fn a_light_is_saved_once_and_never_as_held() {
