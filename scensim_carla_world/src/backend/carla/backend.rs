@@ -5923,11 +5923,11 @@ impl CarlaBackend {
             .spawned_step
             .get(&id)
             .map_or(u64::MAX, |at| self.steps_run.saturating_sub(*at));
-        if !settled_from_spawn(since, self.step_time) {
+        if !landed_from_spawn(since, self.step_time, self.actor_speed(id)) {
             self.pending_release.insert(id);
             tracing::info!(
-                "'{name}' leaves its park for its start speed {speed} m/s once settled from its \
-                 spawn ({since} step(s) ago; scensim issue 204)"
+                "'{name}' leaves its park for its start speed {speed} m/s once landed from its \
+                 spawn drop ({since} step(s) ago; scensim issue 204)"
             );
             return Ok(());
         }
@@ -5960,7 +5960,7 @@ impl CarlaBackend {
                     .spawned_step
                     .get(id)
                     .map_or(u64::MAX, |at| self.steps_run.saturating_sub(*at));
-                settled_from_spawn(since, self.step_time)
+                landed_from_spawn(since, self.step_time, self.actor_speed(*id))
             })
             .collect();
         for id in ready {
@@ -5982,6 +5982,18 @@ impl CarlaBackend {
                 }
             }
         }
+    }
+
+    /// An actor's speed, m/s; unknown (an RPC failed, the actor is gone) reads as moving.
+    fn actor_speed(&self, id: u32) -> f64 {
+        self.world
+            .actor(id)
+            .ok()
+            .flatten()
+            .and_then(|a| a.velocity().ok())
+            .map_or(f64::INFINITY, |v| {
+                f64::from((v.x * v.x + v.y * v.y + v.z * v.z).sqrt())
+            })
     }
 
     /// Release a settled car from its park for its start speed: `Some(why)` when its grade
@@ -6038,8 +6050,9 @@ impl CarlaBackend {
         }
         if self.pending_release.remove(&id) {
             return failed(format!(
-                "SetInitialSpeed {speed} m/s for '{name}': SSv2 started it before it settled \
-                 from its spawn ({SPAWN_SETTLE_S} s), so it never left its park (scensim issue \
+                "SetInitialSpeed {speed} m/s for '{name}': SSv2 started it before it landed \
+                 from its spawn drop (still after {SPAWN_DROP_S} s, at most {SPAWN_SETTLE_S} s) \
+                 and its brakes let go ({BRAKE_RELEASE_S} s), so it never left its park (scensim issue \
                  204)"
             ));
         }
@@ -7432,6 +7445,17 @@ fn settled_from_spawn(steps: u64, step_time: f64) -> bool {
     steps as f64 * step_time >= SPAWN_SETTLE_S - 1e-9
 }
 
+/// The soonest a car can have dropped onto its suspension, s, and how still it is then, m/s.
+const SPAWN_DROP_S: f64 = 0.2;
+const LANDED_SPEED_MPS: f64 = 0.1;
+
+/// Whether a car `steps` steps of `step_time` s after its spawn, at `speed` m/s, has landed from
+/// its spawn drop: still after SPAWN_DROP_S, or SPAWN_SETTLE_S in any case.
+fn landed_from_spawn(steps: u64, step_time: f64, speed: f64) -> bool {
+    settled_from_spawn(steps, step_time)
+        || (steps as f64 * step_time >= SPAWN_DROP_S - 1e-9 && speed < LANDED_SPEED_MPS)
+}
+
 /// The share of a start speed a car's `wheels` take as they spin up from rest, for a car of
 /// `mass` kg: each takes m/2 of momentum per m/s (PHYSX_WHEEL_MASS_KG).
 fn wheel_share(wheels: usize, mass: f64) -> f64 {
@@ -7739,6 +7763,21 @@ mod tests {
         assert!(settled_from_spawn(10, 0.05));
         assert!(settled_from_spawn(15, 1.0 / 30.0));
         assert!(!settled_from_spawn(14, 1.0 / 30.0));
+    }
+
+    /// A car has landed from its spawn drop once it is still (under 0.1 m/s) after 0.2 s: on
+    /// Town01 it fell for 0.25 s, hit at 1.96 m/s and was at 0.09 m/s 0.3 s after its spawn.
+    /// Waiting the full SPAWN_SETTLE_S lost K11c record 0's start when SSv2 started it 10
+    /// frames after its spawn (scensim issue 204).
+    #[test]
+    fn a_car_has_landed_once_still_after_its_drop() {
+        assert!(!landed_from_spawn(3, 0.05, 0.0), "too soon to have dropped");
+        assert!(!landed_from_spawn(5, 0.05, 1.14), "bouncing");
+        assert!(landed_from_spawn(6, 0.05, 0.09));
+        assert!(
+            landed_from_spawn(10, 0.05, 0.5),
+            "SPAWN_SETTLE_S: settled whatever it reads"
+        );
     }
 
     /// The brakes let a parked car go over about 0.1 s (two 0.05 s frames, measured); a start
